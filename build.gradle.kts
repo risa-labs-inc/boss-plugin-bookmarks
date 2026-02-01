@@ -28,11 +28,11 @@ repositories {
 }
 
 dependencies {
-    // Plugin API from BossConsole (via composite build)
-    implementation("ai.rever.boss.plugin:plugin-api-desktop")
-    implementation("ai.rever.boss.plugin:plugin-scrollbar-desktop")
-    implementation("ai.rever.boss.plugin:plugin-logging-desktop")
-    implementation("ai.rever.boss.plugin:plugin-ui-core-desktop")
+    // Plugin API from Maven Central
+    implementation("com.risaboss:plugin-api-desktop:1.0.0")
+    implementation("com.risaboss:plugin-scrollbar-desktop:1.0.0")
+    implementation("com.risaboss:plugin-logging-desktop:1.0.0")
+    implementation("com.risaboss:plugin-ui-core-desktop:1.0.0")
 
     // Compose dependencies
     implementation(compose.desktop.currentOs)
