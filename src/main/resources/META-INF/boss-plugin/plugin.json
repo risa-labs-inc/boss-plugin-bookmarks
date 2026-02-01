@@ -6,7 +6,7 @@
   "apiVersion": "1.0",
   "mainClass": "ai.rever.boss.plugin.dynamic.bookmarks.BookmarksDynamicPlugin",
   "type": "panel",
-  "description": "Displays and manages browser bookmarks in a sidebar panel (Phase 2 - Not yet fully implemented)",
+  "description": "Displays and manages browser bookmarks in a sidebar panel",
   "author": "Risa Labs",
   "url": "https://github.com/risa-labs-inc/boss-plugin-bookmarks"
 }
