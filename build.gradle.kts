@@ -29,10 +29,12 @@ repositories {
 
 dependencies {
     // Plugin API from Maven Central
-    implementation("com.risaboss:plugin-api-desktop:1.0.1")
-    implementation("com.risaboss:plugin-scrollbar-desktop:1.0.1")
-    implementation("com.risaboss:plugin-logging-desktop:1.0.1")
-    implementation("com.risaboss:plugin-ui-core-desktop:1.0.1")
+    implementation("com.risaboss:plugin-api-desktop:1.0.2")
+    implementation("com.risaboss:plugin-bookmark-types-desktop:1.0.2")
+    implementation("com.risaboss:plugin-workspace-types-desktop:1.0.2")
+    implementation("com.risaboss:plugin-scrollbar-desktop:1.0.2")
+    implementation("com.risaboss:plugin-logging-desktop:1.0.2")
+    implementation("com.risaboss:plugin-ui-core-desktop:1.0.2")
 
     // Compose dependencies
     implementation(compose.desktop.currentOs)
