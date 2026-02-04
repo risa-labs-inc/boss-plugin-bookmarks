@@ -6,6 +6,8 @@ import ai.rever.boss.plugin.api.WorkspaceDataProvider
 import ai.rever.boss.plugin.bookmark.Bookmark
 import ai.rever.boss.plugin.bookmark.BookmarkCollection
 import ai.rever.boss.plugin.workspace.LayoutWorkspace
+import ai.rever.boss.plugin.workspace.PanelConfig
+import ai.rever.boss.plugin.workspace.SplitConfig
 import ai.rever.boss.plugin.workspace.TabConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -57,7 +59,7 @@ class BookmarksViewModel(
     /**
      * Handle bookmark click - opens tab in active panel
      */
-    fun onBookmarkClick(bookmark: Bookmark) {
+    fun onBookmarkClick(bookmark: Bookmark, coroutineScope: CoroutineScope) {
         val splitView = splitViewOperations ?: return
         val provider = bookmarkDataProvider ?: return
 
@@ -76,11 +78,11 @@ class BookmarksViewModel(
     /**
      * Handle workspace click - loads entire workspace
      */
-    fun onWorkspaceClick(workspace: LayoutWorkspace) {
+    fun onWorkspaceClick(workspace: LayoutWorkspace, coroutineScope: CoroutineScope) {
         val splitView = splitViewOperations ?: return
         val wsProvider = workspaceDataProvider ?: return
 
-        scope.launch {
+        coroutineScope.launch {
             // Preserve current state
             val current = wsProvider.currentWorkspace.value
             if (current != null && current.id.isNotEmpty()) {
@@ -137,8 +139,17 @@ class BookmarksViewModel(
         _statusMessage.value = "Bookmark removed"
     }
 
+    fun moveBookmark(bookmarkId: String, fromCollectionId: String, toCollectionId: String) {
+        bookmarkDataProvider?.moveBookmark(bookmarkId, fromCollectionId, toCollectionId)
+        _statusMessage.value = "Bookmark moved"
+    }
+
     fun isTabBookmarked(tabConfig: TabConfig): Boolean {
         return bookmarkDataProvider?.isTabBookmarked(tabConfig) ?: false
+    }
+
+    fun findBookmarkForTab(tabConfig: TabConfig): Pair<String, String>? {
+        return bookmarkDataProvider?.findBookmarkForTab(tabConfig)
     }
 
     // ==================== Collection Operations ====================
@@ -161,6 +172,43 @@ class BookmarksViewModel(
         _statusMessage.value = "Collection renamed to $newName"
     }
 
+    // ==================== Workspace Operations ====================
+
+    fun createNewWorkspace(name: String) {
+        val wsProvider = workspaceDataProvider ?: return
+        if (name.isNotEmpty()) {
+            val newWorkspace = LayoutWorkspace(
+                name = name,
+                description = "",
+                layout = SplitConfig.SinglePanel(
+                    panel = PanelConfig(
+                        id = "panel-1",
+                        tabs = emptyList()
+                    )
+                )
+            )
+            wsProvider.updateCurrentWorkspace(newWorkspace)
+            wsProvider.saveCurrentWorkspace(name)
+            _statusMessage.value = "Created workspace: $name"
+        }
+    }
+
+    fun deleteWorkspace(name: String) {
+        workspaceDataProvider?.deleteWorkspace(name)
+        _statusMessage.value = "Workspace deleted"
+    }
+
+    fun renameWorkspace(oldName: String, newName: String) {
+        workspaceDataProvider?.renameWorkspace(oldName, newName)
+        _statusMessage.value = "Workspace renamed to $newName"
+    }
+
+    fun exportWorkspace(workspace: LayoutWorkspace): String {
+        val json = workspaceDataProvider?.exportWorkspace(workspace) ?: ""
+        _statusMessage.value = "Workspace exported"
+        return json
+    }
+
     // ==================== Favorite Workspace Operations ====================
 
     fun addFavoriteWorkspace(workspaceId: String, workspaceName: String) {
@@ -181,4 +229,60 @@ class BookmarksViewModel(
         _statusMessage.value = null
         _errorMessage.value = null
     }
+
+    // ==================== Utility ====================
+
+    /**
+     * Build hierarchical tab structure from workspace layout
+     */
+    fun buildTabStructure(layout: SplitConfig, level: Int = 0): List<WorkspaceTabStructure> {
+        return when (layout) {
+            is SplitConfig.SinglePanel -> {
+                layout.panel.tabs.map { WorkspaceTabStructure.TabItem(it) }
+            }
+            is SplitConfig.VerticalSplit -> {
+                listOf(
+                    WorkspaceTabStructure.SplitSection(
+                        sectionName = "Left",
+                        children = buildTabStructure(layout.left, level + 1),
+                        level = level
+                    ),
+                    WorkspaceTabStructure.SplitSection(
+                        sectionName = "Right",
+                        children = buildTabStructure(layout.right, level + 1),
+                        level = level
+                    )
+                )
+            }
+            is SplitConfig.HorizontalSplit -> {
+                listOf(
+                    WorkspaceTabStructure.SplitSection(
+                        sectionName = "Top",
+                        children = buildTabStructure(layout.top, level + 1),
+                        level = level
+                    ),
+                    WorkspaceTabStructure.SplitSection(
+                        sectionName = "Bottom",
+                        children = buildTabStructure(layout.bottom, level + 1),
+                        level = level
+                    )
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Represents the hierarchical tab structure within a workspace
+ */
+sealed class WorkspaceTabStructure {
+    data class TabItem(
+        val tabConfig: TabConfig
+    ) : WorkspaceTabStructure()
+
+    data class SplitSection(
+        val sectionName: String,
+        val children: List<WorkspaceTabStructure>,
+        val level: Int = 0
+    ) : WorkspaceTabStructure()
 }

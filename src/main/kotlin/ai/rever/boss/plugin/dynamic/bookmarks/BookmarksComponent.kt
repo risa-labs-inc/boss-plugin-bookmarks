@@ -1,6 +1,8 @@
 package ai.rever.boss.plugin.dynamic.bookmarks
 
+import ai.rever.boss.plugin.api.ActiveTabsProvider
 import ai.rever.boss.plugin.api.BookmarkDataProvider
+import ai.rever.boss.plugin.api.ContextMenuProvider
 import ai.rever.boss.plugin.api.PanelComponentWithUI
 import ai.rever.boss.plugin.api.PanelInfo
 import ai.rever.boss.plugin.api.SplitViewOperations
@@ -18,7 +20,9 @@ class BookmarksComponent(
     override val panelInfo: PanelInfo,
     private val bookmarkDataProvider: BookmarkDataProvider?,
     private val workspaceDataProvider: WorkspaceDataProvider?,
-    private val splitViewOperations: SplitViewOperations?
+    private val splitViewOperations: SplitViewOperations?,
+    private val contextMenuProvider: ContextMenuProvider?,
+    private val activeTabsProvider: ActiveTabsProvider?
 ) : PanelComponentWithUI, ComponentContext by ctx {
 
     private val viewModel = BookmarksViewModel(
@@ -32,7 +36,9 @@ class BookmarksComponent(
         BookmarksContent(
             viewModel = viewModel,
             bookmarkDataProvider = bookmarkDataProvider,
-            workspaceDataProvider = workspaceDataProvider
+            workspaceDataProvider = workspaceDataProvider,
+            contextMenuProvider = contextMenuProvider,
+            activeTabsProvider = activeTabsProvider
         )
     }
 }
