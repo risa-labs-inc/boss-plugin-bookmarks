@@ -4,6 +4,7 @@
   "displayName": "Bookmarks (Dynamic)",
   "version": "1.0.5",
   "apiVersion": "1.0.7",
+  "minBossVersion": "8.16.22",
   "mainClass": "ai.rever.boss.plugin.dynamic.bookmarks.BookmarksDynamicPlugin",
   "type": "panel",
   "description": "Displays and manages browser bookmarks in a sidebar panel",
