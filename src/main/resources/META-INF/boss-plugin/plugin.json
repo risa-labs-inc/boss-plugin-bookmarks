@@ -2,12 +2,14 @@
   "manifestVersion": 1,
   "pluginId": "ai.rever.boss.plugin.dynamic.bookmarks",
   "displayName": "Bookmarks (Dynamic)",
-  "version": "1.0.7",
-  "apiVersion": "1.0.21",
+  "version": "2.0.0",
+  "apiVersion": "1.0.22",
   "minBossVersion": "8.16.30",
   "mainClass": "ai.rever.boss.plugin.dynamic.bookmarks.BookmarksDynamicPlugin",
   "type": "panel",
-  "description": "Displays and manages browser bookmarks in a sidebar panel",
+  "description": "Self-contained bookmark management with global search integration",
   "author": "Risa Labs",
-  "url": "https://github.com/risa-labs-inc/boss-plugin-bookmarks"
+  "url": "https://github.com/risa-labs-inc/boss-plugin-bookmarks",
+  "systemPlugin": true,
+  "canUnload": false
 }

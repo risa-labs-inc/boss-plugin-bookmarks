@@ -1,11 +1,11 @@
 package ai.rever.boss.plugin.dynamic.bookmarks
 
 import ai.rever.boss.plugin.api.ActiveTabsProvider
-import ai.rever.boss.plugin.api.BookmarkDataProvider
 import ai.rever.boss.plugin.api.ContextMenuProvider
 import ai.rever.boss.plugin.api.WorkspaceDataProvider
 import ai.rever.boss.plugin.bookmark.Bookmark
 import ai.rever.boss.plugin.bookmark.BookmarkCollection
+import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
 import ai.rever.boss.plugin.scrollbar.getPanelScrollbarConfig
 import ai.rever.boss.plugin.scrollbar.lazyListScrollbar
 import ai.rever.boss.plugin.ui.ContextMenuItemData
@@ -60,16 +60,14 @@ private val AccentColor = Color(0xFF60A5FA)
 @Composable
 fun BookmarksContent(
     viewModel: BookmarksViewModel,
-    bookmarkDataProvider: BookmarkDataProvider?,
+    bookmarkManager: BookmarkManager,
     workspaceDataProvider: WorkspaceDataProvider?,
     contextMenuProvider: ContextMenuProvider?,
     activeTabsProvider: ActiveTabsProvider?
 ) {
-    if (bookmarkDataProvider == null || workspaceDataProvider == null) {
-        NoProvidersMessage()
-    } else {
-        BookmarksPanel(viewModel, contextMenuProvider, activeTabsProvider)
-    }
+    // BookmarkManager is always available (internal to plugin)
+    // WorkspaceDataProvider may be unavailable but bookmarks can still work
+    BookmarksPanel(viewModel, contextMenuProvider, activeTabsProvider)
 }
 
 @Composable

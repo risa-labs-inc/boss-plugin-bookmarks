@@ -1,10 +1,10 @@
 package ai.rever.boss.plugin.dynamic.bookmarks
 
-import ai.rever.boss.plugin.api.BookmarkDataProvider
 import ai.rever.boss.plugin.api.SplitViewOperations
 import ai.rever.boss.plugin.api.WorkspaceDataProvider
 import ai.rever.boss.plugin.bookmark.Bookmark
 import ai.rever.boss.plugin.bookmark.BookmarkCollection
+import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
 import ai.rever.boss.plugin.workspace.LayoutWorkspace
 import ai.rever.boss.plugin.workspace.PanelConfig
 import ai.rever.boss.plugin.workspace.SplitConfig
@@ -20,20 +20,21 @@ import kotlin.random.Random
 
 /**
  * ViewModel for Bookmarks panel (Dynamic Plugin)
+ *
+ * Uses internal BookmarkManager for bookmark operations instead of
+ * BookmarkDataProvider from the host application.
  */
 class BookmarksViewModel(
-    private val bookmarkDataProvider: BookmarkDataProvider?,
+    private val bookmarkManager: BookmarkManager,
     private val workspaceDataProvider: WorkspaceDataProvider?,
     private val splitViewOperations: SplitViewOperations?
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    // Expose providers' data
-    val collections: StateFlow<List<BookmarkCollection>> = bookmarkDataProvider?.collections
-        ?: MutableStateFlow(emptyList())
+    // Expose bookmark manager's data
+    val collections: StateFlow<List<BookmarkCollection>> = bookmarkManager.collections
 
-    val favoriteWorkspaces = bookmarkDataProvider?.favoriteWorkspaces
-        ?: MutableStateFlow(emptyList())
+    val favoriteWorkspaces = bookmarkManager.favoriteWorkspaces
 
     val workspaces: StateFlow<List<LayoutWorkspace>> = workspaceDataProvider?.workspaces
         ?: MutableStateFlow(emptyList())
@@ -61,14 +62,13 @@ class BookmarksViewModel(
      */
     fun onBookmarkClick(bookmark: Bookmark, coroutineScope: CoroutineScope) {
         val splitView = splitViewOperations ?: return
-        val provider = bookmarkDataProvider ?: return
 
         // Mark as accessed
         val collection = collections.value.find { coll ->
             coll.bookmarks.any { it.id == bookmark.id }
         }
         collection?.let {
-            provider.markBookmarkAsAccessed(it.id, bookmark.id)
+            bookmarkManager.markBookmarkAsAccessed(it.id, bookmark.id)
         }
 
         // Open the tab
@@ -130,45 +130,43 @@ class BookmarksViewModel(
     // ==================== Bookmark Operations ====================
 
     fun addBookmark(collectionName: String, bookmark: Bookmark) {
-        bookmarkDataProvider?.addBookmark(collectionName, bookmark)
+        bookmarkManager.addBookmark(collectionName, bookmark)
         _statusMessage.value = "Bookmark added to $collectionName"
     }
 
     fun removeBookmark(collectionId: String, bookmarkId: String) {
-        bookmarkDataProvider?.removeBookmark(collectionId, bookmarkId)
+        bookmarkManager.removeBookmark(collectionId, bookmarkId)
         _statusMessage.value = "Bookmark removed"
     }
 
     fun moveBookmark(bookmarkId: String, fromCollectionId: String, toCollectionId: String) {
-        bookmarkDataProvider?.moveBookmark(bookmarkId, fromCollectionId, toCollectionId)
+        bookmarkManager.moveBookmark(bookmarkId, fromCollectionId, toCollectionId)
         _statusMessage.value = "Bookmark moved"
     }
 
     fun isTabBookmarked(tabConfig: TabConfig): Boolean {
-        return bookmarkDataProvider?.isTabBookmarked(tabConfig) ?: false
+        return bookmarkManager.isTabBookmarked(tabConfig)
     }
 
     fun findBookmarkForTab(tabConfig: TabConfig): Pair<String, String>? {
-        return bookmarkDataProvider?.findBookmarkForTab(tabConfig)
+        return bookmarkManager.findBookmarkForTab(tabConfig)
     }
 
     // ==================== Collection Operations ====================
 
     fun createCollection(name: String): BookmarkCollection? {
-        val collection = bookmarkDataProvider?.createCollection(name)
-        if (collection != null) {
-            _statusMessage.value = "Created collection: $name"
-        }
+        val collection = bookmarkManager.createCollection(name)
+        _statusMessage.value = "Created collection: $name"
         return collection
     }
 
     fun deleteCollection(collectionId: String) {
-        bookmarkDataProvider?.deleteCollection(collectionId)
+        bookmarkManager.deleteCollection(collectionId)
         _statusMessage.value = "Collection deleted"
     }
 
     fun renameCollection(collectionId: String, newName: String) {
-        bookmarkDataProvider?.renameCollection(collectionId, newName)
+        bookmarkManager.renameCollection(collectionId, newName)
         _statusMessage.value = "Collection renamed to $newName"
     }
 
@@ -212,17 +210,17 @@ class BookmarksViewModel(
     // ==================== Favorite Workspace Operations ====================
 
     fun addFavoriteWorkspace(workspaceId: String, workspaceName: String) {
-        bookmarkDataProvider?.addFavoriteWorkspace(workspaceId, workspaceName)
+        bookmarkManager.addFavoriteWorkspace(workspaceId, workspaceName)
         _statusMessage.value = "Added to favorites: $workspaceName"
     }
 
     fun removeFavoriteWorkspace(workspaceId: String) {
-        bookmarkDataProvider?.removeFavoriteWorkspace(workspaceId)
+        bookmarkManager.removeFavoriteWorkspace(workspaceId)
         _statusMessage.value = "Removed from favorites"
     }
 
     fun isFavorite(workspaceId: String): Boolean {
-        return bookmarkDataProvider?.isFavorite(workspaceId) ?: false
+        return bookmarkManager.isFavorite(workspaceId)
     }
 
     fun clearMessages() {
