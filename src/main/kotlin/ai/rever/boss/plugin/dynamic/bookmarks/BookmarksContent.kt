@@ -236,9 +236,9 @@ private fun BookmarksPanel(
                         contextMenuProvider = contextMenuProvider,
                         contextMenuItems = buildList {
                             if (favoritesCollection.bookmarks.isNotEmpty()) {
-                                add(ContextMenuItemData("Clear All Favorites", Icons.Outlined.DeleteSweep) {
+                                add(ContextMenuItemData("Clear All Favorites", Icons.Outlined.DeleteSweep, onClick = {
                                     showClearFavoritesDialog = true
-                                })
+                                }))
                             }
                         }
                     )
@@ -292,9 +292,9 @@ private fun BookmarksPanel(
                         }
                     },
                     contextMenuItems = listOf(
-                        ContextMenuItemData("New Collection", Icons.Outlined.CreateNewFolder) {
+                        ContextMenuItemData("New Collection", Icons.Outlined.CreateNewFolder, onClick = {
                             showNewCollectionDialog = true
-                        }
+                        })
                     )
                 )
             }
@@ -340,9 +340,9 @@ private fun BookmarksPanel(
                     contextMenuProvider = contextMenuProvider,
                     contextMenuItems = buildList {
                         if (favoriteWorkspaces.isNotEmpty()) {
-                            add(ContextMenuItemData("Unfavorite All", Icons.Outlined.DeleteSweep) {
+                            add(ContextMenuItemData("Unfavorite All", Icons.Outlined.DeleteSweep, onClick = {
                                 showUnfavoriteAllWorkspacesDialog = true
-                            })
+                            }))
                         }
                     }
                 )
@@ -408,9 +408,9 @@ private fun BookmarksPanel(
                         }
                     },
                     contextMenuItems = listOf(
-                        ContextMenuItemData("New Workspace", Icons.Outlined.CreateNewFolder) {
+                        ContextMenuItemData("New Workspace", Icons.Outlined.CreateNewFolder, onClick = {
                             showNewWorkspaceDialog = true
-                        }
+                        })
                     )
                 )
             }
@@ -665,10 +665,10 @@ private fun BookmarkItem(
     onMove: () -> Unit
 ) {
     val contextMenuItems = listOf(
-        ContextMenuItemData("Remove from Collection", Icons.Outlined.Delete) { onRemove() },
+        ContextMenuItemData("Remove from Collection", Icons.Outlined.Delete, onClick = { onRemove() }),
         ContextMenuItemData("", null, isDivider = true),
-        ContextMenuItemData("Copy to Collection", Icons.Outlined.ContentCopy) { onCopy() },
-        ContextMenuItemData("Move to Collection", Icons.AutoMirrored.Outlined.DriveFileMove) { onMove() }
+        ContextMenuItemData("Copy to Collection", Icons.Outlined.ContentCopy, onClick = { onCopy() }),
+        ContextMenuItemData("Move to Collection", Icons.AutoMirrored.Outlined.DriveFileMove, onClick = { onMove() })
     )
 
     val baseModifier = Modifier
@@ -780,12 +780,12 @@ private fun CollectionItem(
 
     val collectionMenuItems = buildList {
         if (!collection.isFavorite) {
-            add(ContextMenuItemData("Rename Collection", Icons.Outlined.Edit) { onRename() })
+            add(ContextMenuItemData("Rename Collection", Icons.Outlined.Edit, onClick = { onRename() }))
         }
-        add(ContextMenuItemData("Export Collection", Icons.Outlined.FileDownload) { })
+        add(ContextMenuItemData("Export Collection", Icons.Outlined.FileDownload, onClick = { }))
         if (!collection.isFavorite) {
             add(ContextMenuItemData("", null, isDivider = true))
-            add(ContextMenuItemData("Delete Collection", Icons.Outlined.Delete) { onDelete() })
+            add(ContextMenuItemData("Delete Collection", Icons.Outlined.Delete, onClick = { onDelete() }))
         }
     }
 
@@ -899,20 +899,21 @@ private fun WorkspaceItem(
     viewModel: BookmarksViewModel
 ) {
     val workspaceMenuItems = buildList {
-        add(ContextMenuItemData("Load Workspace", Icons.Outlined.FolderOpen) { onWorkspaceClick() })
+        add(ContextMenuItemData("Load Workspace", Icons.Outlined.FolderOpen, onClick = { onWorkspaceClick() }))
         add(ContextMenuItemData("", null, isDivider = true))
         add(ContextMenuItemData(
             if (isFavorite) "Unfavorite Workspace" else "Favorite Workspace",
-            if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarBorder
-        ) { onToggleFavorite() })
+            if (isFavorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
+            onClick = { onToggleFavorite() }
+        ))
         add(ContextMenuItemData("", null, isDivider = true))
         if (workspace.name != "Last Session") {
-            add(ContextMenuItemData("Rename Workspace", Icons.Outlined.Edit) { onRename() })
+            add(ContextMenuItemData("Rename Workspace", Icons.Outlined.Edit, onClick = { onRename() }))
         }
-        add(ContextMenuItemData("Export Workspace", Icons.Outlined.FileDownload) { onExport() })
+        add(ContextMenuItemData("Export Workspace", Icons.Outlined.FileDownload, onClick = { onExport() }))
         if (!isCurrentWorkspace && workspace.name != "Last Session") {
             add(ContextMenuItemData("", null, isDivider = true))
-            add(ContextMenuItemData("Delete Workspace", Icons.Outlined.Delete) { onDelete() })
+            add(ContextMenuItemData("Delete Workspace", Icons.Outlined.Delete, onClick = { onDelete() }))
         }
     }
 
