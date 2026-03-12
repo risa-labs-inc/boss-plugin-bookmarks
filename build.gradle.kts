@@ -92,3 +92,17 @@ tasks.processResources {
 tasks.build {
     dependsOn("buildPluginJar")
 }
+
+// Fat JAR for out-of-process plugin execution
+tasks.register<Jar>("shadowJar") {
+    archiveClassifier.set("all")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes(
+            "Main-Class" to "ai.rever.boss.plugin.runtime.PluginProcessMainKt"
+        )
+    }
+    from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
+    from(sourceSets.main.get().output)
+    from("src/main/resources")
+}
