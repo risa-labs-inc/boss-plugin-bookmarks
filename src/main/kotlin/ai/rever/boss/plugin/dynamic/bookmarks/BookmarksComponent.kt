@@ -7,6 +7,7 @@ import ai.rever.boss.plugin.api.PanelInfo
 import ai.rever.boss.plugin.api.SplitViewOperations
 import ai.rever.boss.plugin.api.WorkspaceDataProvider
 import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
+import ai.rever.boss.plugin.ui.BossTheme
 import androidx.compose.runtime.Composable
 import com.arkivanov.decompose.ComponentContext
 
@@ -34,12 +35,14 @@ class BookmarksComponent(
 
     @Composable
     override fun Content() {
-        BookmarksContent(
-            viewModel = viewModel,
-            bookmarkManager = bookmarkManager,
-            workspaceDataProvider = workspaceDataProvider,
-            contextMenuProvider = contextMenuProvider,
-            activeTabsProvider = activeTabsProvider
-        )
+        BossTheme {
+            BookmarksContent(
+                viewModel = viewModel,
+                bookmarkManager = bookmarkManager,
+                workspaceDataProvider = workspaceDataProvider,
+                contextMenuProvider = contextMenuProvider,
+                activeTabsProvider = activeTabsProvider
+            )
+        }
     }
 }
