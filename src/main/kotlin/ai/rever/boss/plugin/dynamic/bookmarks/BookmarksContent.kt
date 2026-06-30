@@ -8,6 +8,7 @@ import ai.rever.boss.plugin.bookmark.BookmarkCollection
 import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
 import ai.rever.boss.plugin.scrollbar.getPanelScrollbarConfig
 import ai.rever.boss.plugin.scrollbar.lazyListScrollbar
+import ai.rever.boss.plugin.ui.BossThemeColors
 import ai.rever.boss.plugin.ui.ContextMenuItemData
 import ai.rever.boss.plugin.workspace.LayoutWorkspace
 import ai.rever.boss.plugin.workspace.SplitConfig
@@ -46,16 +47,19 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 
-// Custom colors matching bundled plugin
+// Theme-aware chrome colors sourced from the host's reactive BOSS theme tokens.
+// These re-skin automatically when the host theme changes.
+private val DarkBackground get() = BossThemeColors.BackgroundColor
+private val SearchBackground get() = BossThemeColors.SurfaceColor
+private val BorderColor get() = BossThemeColors.BorderColor
+private val DividerLineColor get() = BossThemeColors.BorderColor
+private val LightGrayText get() = BossThemeColors.TextPrimary
+private val MutedGrayText get() = BossThemeColors.TextSecondary
+private val LightGrayText2 get() = BossThemeColors.TextSecondary
+private val AccentColor get() = BossThemeColors.AccentColor
+
+// Brand color: the gold favorite/star accent is intentionally fixed (not generic chrome).
 private val GoldFavorite = Color(0xFFFBBF24)
-private val DarkBackground = Color(0xFF1E1E1E)
-private val SearchBackground = Color(0xFF1E1F22)
-private val BorderColor = Color(0xFF555555)
-private val DividerLineColor = Color(0xFF4B5563)
-private val LightGrayText = Color(0xFFF2F2F2)
-private val MutedGrayText = Color(0xFF9CA3AF)
-private val LightGrayText2 = Color(0xFFD1D5DB)
-private val AccentColor = Color(0xFF60A5FA)
 
 @Composable
 fun BookmarksContent(
@@ -696,7 +700,7 @@ private fun BookmarkItem(
         Text(
             text = bookmark.tabConfig.title,
             fontSize = 12.sp,
-            color = Color.White,
+            color = BossThemeColors.TextPrimary,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
@@ -959,7 +963,7 @@ private fun WorkspaceItem(
                 Text(
                     text = workspace.name,
                     fontSize = 12.sp,
-                    color = Color.White,
+                    color = BossThemeColors.TextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
@@ -1155,7 +1159,7 @@ private fun BookmarkSearchBar(
             .height(28.dp),
         singleLine = true,
         textStyle = MaterialTheme.typography.body2.copy(
-            color = Color.White
+            color = BossThemeColors.TextPrimary
         ),
         cursorBrush = SolidColor(GoldFavorite),
         decorationBox = { innerTextField ->
@@ -1178,7 +1182,7 @@ private fun BookmarkSearchBar(
                     imageVector = Icons.Outlined.Search,
                     contentDescription = "Search",
                     modifier = Modifier.size(16.dp),
-                    tint = Color(0xFF888888)
+                    tint = BossThemeColors.TextSecondary
                 )
 
                 Spacer(modifier = Modifier.width(6.dp))
@@ -1188,7 +1192,7 @@ private fun BookmarkSearchBar(
                         Text(
                             "Search bookmarks, collections, workspaces...",
                             style = MaterialTheme.typography.body2,
-                            color = Color(0xFF888888),
+                            color = BossThemeColors.TextSecondary,
                             fontSize = 12.sp
                         )
                     }
@@ -1205,7 +1209,7 @@ private fun BookmarkSearchBar(
                             imageVector = Icons.Filled.Clear,
                             contentDescription = "Clear search",
                             modifier = Modifier.size(14.dp),
-                            tint = Color(0xFF888888)
+                            tint = BossThemeColors.TextSecondary
                         )
                     }
                 }
@@ -1305,7 +1309,7 @@ private fun NewCollectionDialog(
                 modifier = Modifier.fillMaxWidth(),
                 colors = TextFieldDefaults.textFieldColors(
                     backgroundColor = SearchBackground,
-                    textColor = Color.White
+                    textColor = BossThemeColors.TextPrimary
                 )
             )
         },
@@ -1346,7 +1350,7 @@ private fun NewWorkspaceDialog(
                 modifier = Modifier.fillMaxWidth(),
                 colors = TextFieldDefaults.textFieldColors(
                     backgroundColor = SearchBackground,
-                    textColor = Color.White
+                    textColor = BossThemeColors.TextPrimary
                 )
             )
         },
@@ -1387,7 +1391,7 @@ private fun DeleteCollectionDialog(
         confirmButton = {
             TextButton(
                 onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFEF5350))
+                colors = ButtonDefaults.textButtonColors(contentColor = BossThemeColors.ErrorColor)
             ) {
                 Text("Delete")
             }
@@ -1422,7 +1426,7 @@ private fun RenameCollectionDialog(
                 modifier = Modifier.fillMaxWidth(),
                 colors = TextFieldDefaults.textFieldColors(
                     backgroundColor = SearchBackground,
-                    textColor = Color.White
+                    textColor = BossThemeColors.TextPrimary
                 )
             )
         },
@@ -1463,7 +1467,7 @@ private fun DeleteWorkspaceDialog(
         confirmButton = {
             TextButton(
                 onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFEF5350))
+                colors = ButtonDefaults.textButtonColors(contentColor = BossThemeColors.ErrorColor)
             ) {
                 Text("Delete")
             }
@@ -1498,7 +1502,7 @@ private fun RenameWorkspaceDialog(
                 modifier = Modifier.fillMaxWidth(),
                 colors = TextFieldDefaults.textFieldColors(
                     backgroundColor = SearchBackground,
-                    textColor = Color.White
+                    textColor = BossThemeColors.TextPrimary
                 )
             )
         },
@@ -1537,7 +1541,7 @@ private fun ClearFavoritesDialog(
         confirmButton = {
             TextButton(
                 onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFEF5350))
+                colors = ButtonDefaults.textButtonColors(contentColor = BossThemeColors.ErrorColor)
             ) {
                 Text("Clear All")
             }
@@ -1569,7 +1573,7 @@ private fun UnfavoriteAllWorkspacesDialog(
         confirmButton = {
             TextButton(
                 onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFEF5350))
+                colors = ButtonDefaults.textButtonColors(contentColor = BossThemeColors.ErrorColor)
             ) {
                 Text("Unfavorite All")
             }
@@ -1602,7 +1606,7 @@ private fun ConfirmRemoveBookmarkDialog(
         confirmButton = {
             TextButton(
                 onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(contentColor = Color(0xFFEF5350))
+                colors = ButtonDefaults.textButtonColors(contentColor = BossThemeColors.ErrorColor)
             ) {
                 Text("Remove")
             }
