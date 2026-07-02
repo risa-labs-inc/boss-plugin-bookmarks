@@ -59,6 +59,9 @@ class BookmarksDynamicPlugin : DynamicPlugin {
         searchProvider = BookmarkSearchProvider(bookmarkManager!!)
         context.registerSearchProvider(searchProvider!!)
 
+        // Contribute bookmarks_list/add/remove MCP tools; auto-removed on disable/unload.
+        context.registerMcpToolProvider(BookmarksMcpToolProvider(pluginId, bookmarkManager!!))
+
         // Create and register BookmarkDataProvider for BossConsole UI
         // This allows context menus, bookmark dialogs, etc. to work
         bookmarkDataProvider = BookmarkDataProviderImpl(bookmarkManager!!)

@@ -4,7 +4,7 @@
   "displayName": "Bookmarks (Dynamic)",
   "version": "2.0.1",
   "apiVersion": "1.0.22",
-  "minBossVersion": "8.16.30",
+  "minBossVersion": "9.2.20",
   "mainClass": "ai.rever.boss.plugin.dynamic.bookmarks.BookmarksDynamicPlugin",
   "type": "panel",
   "description": "Self-contained bookmark management with global search integration",
