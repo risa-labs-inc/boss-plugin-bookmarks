@@ -19,7 +19,10 @@ import java.nio.file.Paths
  * This is a JVM-only implementation for the bookmarks plugin.
  */
 internal class BookmarkFileManager {
-    private val logger = BossLogger.forComponent("BookmarkFileManager")
+    // Getter (no backing field): a ComponentLogger-typed field makes the Compose
+    // compiler emit a cross-jar $stable reference that the host's parent-first
+    // copy of ComponentLogger doesn't have, failing binary-compat validation.
+    private val logger get() = BossLogger.forComponent("BookmarkFileManager")
 
     companion object {
         /** Bookmark collections file name */

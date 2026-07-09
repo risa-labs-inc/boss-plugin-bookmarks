@@ -23,7 +23,9 @@ import kotlinx.coroutines.launch
  * It is self-contained and does not depend on BossConsole's implementation.
  */
 class BookmarkManager {
-    private val logger = BossLogger.forComponent("BookmarkManager")
+    // Getter (no backing field): see BookmarkFileManager.logger — avoids a
+    // Compose-emitted $stable reference the host's ComponentLogger lacks.
+    private val logger get() = BossLogger.forComponent("BookmarkManager")
     private val fileManager = BookmarkFileManager()
     private val scope = CoroutineScope(Dispatchers.Default)
 
