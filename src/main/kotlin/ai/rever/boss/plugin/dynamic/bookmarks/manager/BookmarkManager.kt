@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Manages bookmark collections and favorite workspaces.
@@ -22,12 +24,23 @@ import kotlinx.coroutines.launch
  * This is the internal bookmark manager for the bookmarks plugin.
  * It is self-contained and does not depend on BossConsole's implementation.
  */
-class BookmarkManager {
+class BookmarkManager internal constructor(
+    // Injectable for tests; production callers use the no-arg constructor and
+    // get the real ~/Documents/BOSS/bookmarks location.
+    private val fileManager: BookmarkFileManager
+) {
+    constructor() : this(BookmarkFileManager())
+
     // Getter (no backing field): see BookmarkFileManager.logger — avoids a
     // Compose-emitted $stable reference the host's ComponentLogger lacks.
     private val logger get() = BossLogger.forComponent("BookmarkManager")
-    private val fileManager = BookmarkFileManager()
     private val scope = CoroutineScope(Dispatchers.Default)
+
+    // One lock per persisted file. Saves are fire-and-forget launches, so
+    // without these two writers can interleave on the same path — see
+    // saveCollectionsToFile.
+    private val collectionsSaveMutex = Mutex()
+    private val favoritesSaveMutex = Mutex()
 
     private val _collections = MutableStateFlow<List<BookmarkCollection>>(emptyList())
     val collections: StateFlow<List<BookmarkCollection>> = _collections.asStateFlow()
@@ -274,10 +287,18 @@ class BookmarkManager {
 
     /**
      * Save collections to file.
+     *
+     * Every mutating operation calls this, so a burst of writes (a bulk import,
+     * say) queues many concurrent launches. Without the mutex they would all
+     * reach [BookmarkFileManager.saveCollections] at once and race on the same
+     * path. The lock serialises them; the state is read *inside* the lock so a
+     * queued save always persists the latest snapshot rather than a stale one.
      */
     private fun saveCollectionsToFile() {
         scope.launch {
-            fileManager.saveCollections(_collections.value)
+            collectionsSaveMutex.withLock {
+                fileManager.saveCollections(_collections.value)
+            }
         }
     }
 
@@ -286,7 +307,9 @@ class BookmarkManager {
      */
     private fun saveFavoriteWorkspacesToFile() {
         scope.launch {
-            fileManager.saveFavoriteWorkspaces(_favoriteWorkspaces.value)
+            favoritesSaveMutex.withLock {
+                fileManager.saveFavoriteWorkspaces(_favoriteWorkspaces.value)
+            }
         }
     }
 }

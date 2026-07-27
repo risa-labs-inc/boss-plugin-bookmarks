@@ -7,7 +7,10 @@ import ai.rever.boss.plugin.logging.LogCategory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 
 /**
  * Manages file-based bookmark storage.
@@ -18,7 +21,12 @@ import java.nio.file.Paths
  *
  * This is a JVM-only implementation for the bookmarks plugin.
  */
-internal class BookmarkFileManager {
+internal class BookmarkFileManager(
+    // Injectable so tests can point at a temp directory instead of the real
+    // ~/Documents/BOSS/bookmarks — a test that hammers concurrent saves must
+    // never touch the user's actual bookmarks.
+    private val bookmarksDirectory: String = defaultBookmarksDirectory()
+) {
     // Getter (no backing field): a ComponentLogger-typed field makes the Compose
     // compiler emit a cross-jar $stable reference that the host's parent-first
     // copy of ComponentLogger doesn't have, failing binary-compat validation.
@@ -33,6 +41,12 @@ internal class BookmarkFileManager {
 
         /** Default bookmarks directory name under Documents */
         private const val BOOKMARKS_DIR = "BOSS/bookmarks"
+
+        /** Production location: ~/Documents/BOSS/bookmarks/ */
+        fun defaultBookmarksDirectory(): String {
+            val userHome = System.getProperty("user.home")
+            return Paths.get(userHome, "Documents", BOOKMARKS_DIR).toString()
+        }
     }
 
     /**
@@ -40,10 +54,7 @@ internal class BookmarkFileManager {
      *
      * @return Full path to bookmarks directory (e.g., ~/Documents/BOSS/bookmarks/)
      */
-    fun getBookmarksDirectory(): String {
-        val userHome = System.getProperty("user.home")
-        return Paths.get(userHome, "Documents", BOOKMARKS_DIR).toString()
-    }
+    fun getBookmarksDirectory(): String = bookmarksDirectory
 
     /**
      * Ensure the bookmarks directory exists.
@@ -64,6 +75,45 @@ internal class BookmarkFileManager {
     }
 
     /**
+     * Write [json] to [filePath] without ever leaving a partial file behind.
+     *
+     * A plain `File.writeText` truncates the target before writing, so a reader
+     * — or a second writer — that arrives mid-write sees a truncated or
+     * interleaved document. For collections.json that means the user's entire
+     * bookmark set is lost. Writing to a sibling temp file and moving it into
+     * place makes the swap a single filesystem operation instead.
+     *
+     * ATOMIC_MOVE is unsupported on a few filesystems; fall back to a plain
+     * replacing move, which is still far narrower a window than truncate-write.
+     */
+    private fun writeAtomically(filePath: String, json: String) {
+        val target = Paths.get(filePath)
+
+        // A unique temp file per call, NOT a fixed "$filePath.tmp". Two writers
+        // sharing one temp path would corrupt each other's staging file and
+        // then move the wreckage into place — reintroducing the very race this
+        // method exists to close.
+        val tmp = Files.createTempFile(target.parent, target.fileName.toString(), ".tmp")
+        try {
+            Files.writeString(tmp, json)
+            try {
+                Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (e: AtomicMoveNotSupportedException) {
+                logger.debug(
+                    LogCategory.FILE,
+                    "Atomic move unsupported on this filesystem - falling back to replacing move",
+                    mapOf("error" to e.toString())
+                )
+                Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            // A successful move already consumed the temp file; this only fires
+            // when writeString or move threw, so a failed save can't litter.
+            Files.deleteIfExists(tmp)
+        }
+    }
+
+    /**
      * Save bookmark collections to file.
      *
      * Saves all collections to collections.json.
@@ -77,13 +127,11 @@ internal class BookmarkFileManager {
                 ensureBookmarksDirectory()
 
                 val filePath = Paths.get(getBookmarksDirectory(), COLLECTIONS_FILE).toString()
-                val file = File(filePath)
 
                 // Serialize collections
                 val json = BookmarkSerializer.serializeCollections(collections)
 
-                // Write to file
-                file.writeText(json)
+                writeAtomically(filePath, json)
 
                 true
             } catch (e: Exception) {
@@ -131,13 +179,11 @@ internal class BookmarkFileManager {
                 ensureBookmarksDirectory()
 
                 val filePath = Paths.get(getBookmarksDirectory(), FAVORITE_WORKSPACES_FILE).toString()
-                val file = File(filePath)
 
                 // Serialize favorite workspaces
                 val json = BookmarkSerializer.serializeFavoriteWorkspaces(favorites)
 
-                // Write to file
-                file.writeText(json)
+                writeAtomically(filePath, json)
 
                 true
             } catch (e: Exception) {

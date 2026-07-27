@@ -58,6 +58,27 @@ dependencies {
 
     // Serialization for BookmarkSerializer
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+
+    // The plugin API is compileOnly at runtime (host-provided), but tests run
+    // outside the host so they need the same classes on the test classpath.
+    testImplementation(
+        if (useLocalDependencies) {
+            files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.62.jar")
+        } else {
+            files("build/downloaded-deps/boss-plugin-api.jar")
+        }
+    )
+    testImplementation(kotlin("test"))
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+
+    // BossLogger resolves an SLF4J backend at first use. The host supplies one
+    // at runtime; without it on the test classpath a logged warning throws
+    // NoClassDefFoundError and masks the assertion that was actually failing.
+    testRuntimeOnly("org.slf4j:slf4j-simple:2.0.18")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
 
 // Task to build plugin JAR with compiled classes only (dependencies provided by host)
