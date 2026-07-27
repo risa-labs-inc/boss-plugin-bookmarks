@@ -7,10 +7,14 @@ import ai.rever.boss.plugin.logging.LogCategory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.PosixFileAttributeView
 
 /**
  * Manages file-based bookmark storage.
@@ -21,7 +25,7 @@ import java.nio.file.StandardCopyOption
  *
  * This is a JVM-only implementation for the bookmarks plugin.
  */
-internal class BookmarkFileManager(
+internal open class BookmarkFileManager(
     // Injectable so tests can point at a temp directory instead of the real
     // ~/Documents/BOSS/bookmarks — a test that hammers concurrent saves must
     // never touch the user's actual bookmarks.
@@ -38,6 +42,9 @@ internal class BookmarkFileManager(
 
         /** Favorite workspaces file name */
         const val FAVORITE_WORKSPACES_FILE = "favorite-workspaces.json"
+
+        /** Suffix for in-flight write staging files. */
+        private const val TMP_SUFFIX = ".tmp"
 
         /** Default bookmarks directory name under Documents */
         private const val BOOKMARKS_DIR = "BOSS/bookmarks"
@@ -87,15 +94,34 @@ internal class BookmarkFileManager(
      * replacing move, which is still far narrower a window than truncate-write.
      */
     private fun writeAtomically(filePath: String, json: String) {
-        val target = Paths.get(filePath)
+        // Resolve a symlink to its target before replacing it. ~/Documents is
+        // iCloud-synced by default on macOS, and a moved-into-place file would
+        // otherwise replace the *link* with a regular file rather than writing
+        // through it.
+        val requested = Paths.get(filePath)
+        val target = if (Files.isSymbolicLink(requested)) requested.toRealPath() else requested
 
         // A unique temp file per call, NOT a fixed "$filePath.tmp". Two writers
         // sharing one temp path would corrupt each other's staging file and
         // then move the wreckage into place — reintroducing the very race this
         // method exists to close.
-        val tmp = Files.createTempFile(target.parent, target.fileName.toString(), ".tmp")
+        val tmp = Files.createTempFile(target.parent, target.fileName.toString(), TMP_SUFFIX)
         try {
-            Files.writeString(tmp, json)
+            // force(true) before the rename: writeString returns once the bytes
+            // are in the page cache, and the rename is separate metadata. A
+            // crash in between can leave the rename persisted with the contents
+            // not yet written — a present-but-empty collections.json, which is
+            // the same loss this method exists to prevent.
+            FileChannel.open(tmp, StandardOpenOption.WRITE).use { channel ->
+                channel.write(ByteBuffer.wrap(json.toByteArray(Charsets.UTF_8)))
+                channel.force(true)
+            }
+
+            // createTempFile is 0600; the file this replaces is usually 0644.
+            // Carry the old mode over so replacing it isn't a silent
+            // permissions change on upgrade.
+            copyPermissions(from = target, to = tmp)
+
             try {
                 Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             } catch (e: AtomicMoveNotSupportedException) {
@@ -107,9 +133,35 @@ internal class BookmarkFileManager(
                 Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
             }
         } finally {
-            // A successful move already consumed the temp file; this only fires
-            // when writeString or move threw, so a failed save can't litter.
-            Files.deleteIfExists(tmp)
+            // A successful move already consumed the temp file, so this only
+            // fires when the write or move threw. Guarded because a failing
+            // delete must not mask the original exception, nor turn a
+            // successful save's result into a failure.
+            runCatching { Files.deleteIfExists(tmp) }
+        }
+    }
+
+    /** Mirror [from]'s POSIX mode onto [to], where the platform has one. */
+    private fun copyPermissions(from: java.nio.file.Path, to: java.nio.file.Path) {
+        runCatching {
+            if (!Files.exists(from)) return
+            val view = Files.getFileAttributeView(from, PosixFileAttributeView::class.java) ?: return
+            Files.setPosixFilePermissions(to, view.readAttributes().permissions())
+        }
+    }
+
+    /**
+     * Remove temp files a previous run left behind.
+     *
+     * The write path cleans up after itself on failure, but a kill -9 or power
+     * loss mid-write cannot — and nothing else ever sweeps them.
+     */
+    private fun sweepStaleTempFiles() {
+        runCatching {
+            File(getBookmarksDirectory())
+                .listFiles { f: File -> f.isFile && f.name.endsWith(TMP_SUFFIX) }
+                .orEmpty()
+                .forEach { it.delete() }
         }
     }
 
@@ -121,7 +173,7 @@ internal class BookmarkFileManager(
      * @param collections List of bookmark collections to save
      * @return true if saved successfully
      */
-    suspend fun saveCollections(collections: List<BookmarkCollection>): Boolean =
+    open suspend fun saveCollections(collections: List<BookmarkCollection>): Boolean =
         withContext(Dispatchers.IO) {
             try {
                 ensureBookmarksDirectory()
@@ -150,6 +202,7 @@ internal class BookmarkFileManager(
     suspend fun loadCollections(): List<BookmarkCollection> =
         withContext(Dispatchers.IO) {
             try {
+                sweepStaleTempFiles()
                 val filePath = Paths.get(getBookmarksDirectory(), COLLECTIONS_FILE).toString()
                 val file = File(filePath)
 
@@ -173,7 +226,7 @@ internal class BookmarkFileManager(
      * @param favorites List of favorite workspaces to save
      * @return true if saved successfully
      */
-    suspend fun saveFavoriteWorkspaces(favorites: List<FavoriteWorkspace>): Boolean =
+    open suspend fun saveFavoriteWorkspaces(favorites: List<FavoriteWorkspace>): Boolean =
         withContext(Dispatchers.IO) {
             try {
                 ensureBookmarksDirectory()

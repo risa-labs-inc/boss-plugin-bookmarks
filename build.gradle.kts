@@ -26,6 +26,14 @@ kotlin {
 val useLocalDependencies = System.getenv("CI") != "true"
 val bossPluginApiPath = "../boss-plugin-api"
 
+// One definition so the compileOnly and testImplementation pins cannot drift.
+val bossPluginApiJar =
+    if (useLocalDependencies) {
+        files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.62.jar")
+    } else {
+        files("build/downloaded-deps/boss-plugin-api.jar")
+    }
+
 repositories {
     google()
     mavenCentral()
@@ -33,13 +41,7 @@ repositories {
 }
 
 dependencies {
-    if (useLocalDependencies) {
-        // Local development: use boss-plugin-api JAR from sibling repo
-        compileOnly(files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.62.jar"))
-    } else {
-        // CI: use downloaded JAR
-        compileOnly(files("build/downloaded-deps/boss-plugin-api.jar"))
-    }
+    compileOnly(bossPluginApiJar)
 
     // Compose dependencies
     implementation(compose.desktop.currentOs)
@@ -61,13 +63,7 @@ dependencies {
 
     // The plugin API is compileOnly at runtime (host-provided), but tests run
     // outside the host so they need the same classes on the test classpath.
-    testImplementation(
-        if (useLocalDependencies) {
-            files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.62.jar")
-        } else {
-            files("build/downloaded-deps/boss-plugin-api.jar")
-        }
-    )
+    testImplementation(bossPluginApiJar)
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 
