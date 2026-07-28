@@ -97,8 +97,28 @@ class BookmarkManagerSaveTest {
         throw AssertionError("timed out waiting for: $what")
     }
 
-    /** Let any queued save drain; used where the assertion is about a count. */
-    private fun settle(millis: Long = 400) = Thread.sleep(millis)
+    /**
+     * Wait until no save has happened for a short quiet period.
+     *
+     * A fixed sleep made count assertions flaky: the initial load's own save
+     * could land after the baseline was read.
+     */
+    private fun settle(quietMillis: Long = 250) {
+        val deadline = System.currentTimeMillis() + 5_000
+        var last = probe.collectionSaves.get()
+        var quietSince = System.currentTimeMillis()
+
+        while (System.currentTimeMillis() < deadline) {
+            Thread.sleep(20)
+            val now = probe.collectionSaves.get()
+            if (now != last) {
+                last = now
+                quietSince = System.currentTimeMillis()
+            } else if (System.currentTimeMillis() - quietSince >= quietMillis) {
+                return
+            }
+        }
+    }
 
     @Test
     fun `a burst of mutations never overlaps two saves`() {
@@ -158,7 +178,7 @@ class BookmarkManagerSaveTest {
         // A mutation after close must not be picked up — the workers are gone,
         // which is what lets the plugin classloader be collected.
         manager.createCollection("After Close")
-        settle(200)
+        settle()
 
         assertEquals(after, probe.collectionSaves.get(), "a worker survived close()")
     }
