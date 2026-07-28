@@ -30,6 +30,23 @@ internal class BookmarkDataProviderImpl(
         bookmarkManager.addBookmark(collectionName, bookmark)
     }
 
+    /**
+     * Overrides the interface default, which loops [addBookmark] and therefore
+     * persists once per bookmark.
+     *
+     * Note this differs in *behaviour*, not only cost: [addBookmark] silently
+     * no-ops on a missing collection, so the default drops the whole batch for
+     * a collection that does not exist, while this creates it. The host ensures
+     * the collection before calling either way, so the two agree in practice —
+     * but a direct caller should know which it is talking to.
+     */
+    override fun addBookmarks(collectionName: String, bookmarks: List<Bookmark>) {
+        bookmarkManager.addBookmarks(collectionName, bookmarks)
+    }
+
+    /** Declares the override above, so callers need not infer it reflectively. */
+    override val supportsBulkAdd: Boolean get() = true
+
     override fun removeBookmark(collectionId: String, bookmarkId: String) {
         bookmarkManager.removeBookmark(collectionId, bookmarkId)
     }

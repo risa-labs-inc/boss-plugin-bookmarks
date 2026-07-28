@@ -241,6 +241,49 @@ class BookmarkManager internal constructor(
     }
 
     /**
+     * Add many bookmarks to a collection in one operation, creating the
+     * collection if it does not already exist.
+     *
+     * The point of this over a loop of [addBookmark] is that it saves **once**.
+     * Adding N bookmarks individually queues N full rewrites of
+     * collections.json — for an import of a few hundred entries that is both
+     * slow and, before the write became atomic, a way to lose the file.
+     */
+    fun addBookmarks(collectionName: String, bookmarks: List<Bookmark>) {
+        if (bookmarks.isEmpty()) return
+
+        mutateCollections { current ->
+            // createCollection appends unconditionally rather than get-or-create,
+            // so resolve by name first or an import into an existing folder would
+            // leave a duplicate empty collection behind.
+            val index = current.indexOfFirst { it.name == collectionName }
+
+            if (index >= 0) {
+                // One append of the whole batch, not a fold of per-item copies.
+                // getAndUpdate re-runs this transform on CAS contention, and
+                // BookmarkCollection.addBookmark copies the list each call — so
+                // folding would be O(n²) copies, re-paid per retry, on whatever
+                // thread the host called from. A browser import is 10-20k
+                // entries, which is where that stops being theoretical.
+                current.toMutableList().also {
+                    it[index] = it[index].copy(bookmarks = it[index].bookmarks + bookmarks)
+                }
+            } else {
+                current +
+                    BookmarkCollection(
+                        name = collectionName,
+                        bookmarks = bookmarks,
+                        // Without this, importing into "Favorites" would create a
+                        // collection named Favorites that getFavoritesCollection()
+                        // — which matches on the flag — cannot find, and that
+                        // deleteCollection would happily remove.
+                        isFavorite = collectionName == BookmarkCollection.FAVORITES_NAME,
+                    )
+            }
+        }
+    }
+
+    /**
      * Remove a bookmark from a collection.
      */
     fun removeBookmark(collectionId: String, bookmarkId: String) {
