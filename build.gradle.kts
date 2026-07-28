@@ -26,10 +26,14 @@ kotlin {
 val useLocalDependencies = System.getenv("CI") != "true"
 val bossPluginApiPath = "../boss-plugin-api"
 
+// One definition so the compileOnly, testImplementation, plugin.json and CI
+// pins cannot drift. processResources substitutes it into the manifest.
+val bossPluginApiVersion = "1.0.69"
+
 // One definition so the compileOnly and testImplementation pins cannot drift.
 val bossPluginApiJar =
     if (useLocalDependencies) {
-        files("$bossPluginApiPath/build/libs/boss-plugin-api-1.0.62.jar")
+        files("$bossPluginApiPath/build/libs/boss-plugin-api-$bossPluginApiVersion.jar")
     } else {
         files("build/downloaded-deps/boss-plugin-api.jar")
     }
@@ -98,9 +102,15 @@ tasks.register<Jar>("buildPluginJar") {
 
 // Sync version from build.gradle.kts into plugin.json (single source of truth)
 tasks.processResources {
+    inputs.property("pluginVersion", version)
+    inputs.property("bossPluginApiVersion", bossPluginApiVersion)
     filesMatching("**/plugin.json") {
         filter { line ->
-            line.replace(Regex(""""version"\s*:\s*"[^"]*""""), """"version": "\$version"""")
+            line
+                .replace(Regex(""""version"\s*:\s*"[^"]*""""), """"version": "\$version"""")
+                // Keeps the declared apiVersion in step with the jar this was
+                // actually compiled against.
+                .replace(Regex(""""apiVersion"\s*:\s*"[^"]*""""), """"apiVersion": "$bossPluginApiVersion"""")
         }
     }
 }
