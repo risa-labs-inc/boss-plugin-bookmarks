@@ -46,6 +46,9 @@ internal open class BookmarkFileManager(
         /** Suffix for in-flight write staging files. */
         private const val TMP_SUFFIX = ".tmp"
 
+        /** Where an unparseable file is kept so it is not silently lost. */
+        private const val CORRUPT_SUFFIX = ".corrupt"
+
         /** Only sweep staging files old enough that no write can still own them. */
         private const val STALE_TMP_AGE_MS = 5 * 60 * 1000L
 
@@ -153,6 +156,11 @@ internal open class BookmarkFileManager(
                 )
                 Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
             }
+            // Force the directory too, so the rename itself survives power
+            // loss rather than only the bytes it points at.
+            runCatching {
+                FileChannel.open(target.parent, StandardOpenOption.READ).use { it.force(true) }
+            }
         } finally {
             // A successful move already consumed the temp file, so this only
             // fires when the write or move threw. Guarded because a failing
@@ -168,6 +176,23 @@ internal open class BookmarkFileManager(
             if (!Files.exists(from)) return
             val view = Files.getFileAttributeView(from, PosixFileAttributeView::class.java) ?: return
             Files.setPosixFilePermissions(to, view.readAttributes().permissions())
+        }
+    }
+
+    /** Copy an unparseable file aside before anything overwrites it. */
+    private fun preserveCorruptFile(file: File, cause: Exception) {
+        runCatching {
+            val backup = File(file.absolutePath + CORRUPT_SUFFIX)
+            // One copy only: a repeated failure must not overwrite the first,
+            // which is the one closest to the original good state.
+            if (!backup.exists()) {
+                Files.copy(file.toPath(), backup.toPath())
+                logger.warn(
+                    LogCategory.FILE,
+                    "collections.json could not be parsed - kept a copy before it is replaced",
+                    mapOf("backup" to backup.name, "reason" to (cause.message ?: "unknown")),
+                )
+            }
         }
     }
 
@@ -238,7 +263,16 @@ internal open class BookmarkFileManager(
                 }
 
                 val json = file.readText()
-                BookmarkSerializer.deserializeCollections(json)
+                try {
+                    BookmarkSerializer.deserializeCollections(json)
+                } catch (parseError: Exception) {
+                    // An unparseable file is about to be replaced by a fresh
+                    // [Favorites] document — and now that writes are atomic, that
+                    // is a clean, complete commit of the loss. Keep a copy first
+                    // so whatever was in there is still recoverable by hand.
+                    preserveCorruptFile(file, parseError)
+                    throw parseError
+                }
             } catch (e: Exception) {
                 logger.warn(LogCategory.FILE, "Error loading collections", error = e)
                 emptyList()

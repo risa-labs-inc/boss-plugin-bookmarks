@@ -65,7 +65,6 @@ dependencies {
     // outside the host so they need the same classes on the test classpath.
     testImplementation(bossPluginApiJar)
     testImplementation(kotlin("test"))
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 
     // BossLogger resolves an SLF4J backend at first use. The host supplies one
     // at runtime; without it on the test classpath a logged warning throws

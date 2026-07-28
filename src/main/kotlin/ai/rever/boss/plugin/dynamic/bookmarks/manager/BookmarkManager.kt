@@ -42,14 +42,28 @@ class BookmarkManager internal constructor(
     private val logger get() = BossLogger.forComponent("BookmarkManager")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("BookmarkManager"))
 
-    /** Held so [close] can drain them before the scope goes away. */
-    private var saveWorkers: List<Job> = emptyList()
+
 
     // One conflating channel per persisted file. Requests coalesce while a
     // save is running, and a single consumer keeps writes strictly ordered —
     // see saveCollectionsToFile.
     private val collectionSaveRequests = Channel<Unit>(Channel.CONFLATED)
     private val favoriteSaveRequests = Channel<Unit>(Channel.CONFLATED)
+
+    /** Held so [close] can drain them before the scope goes away. */
+    private val saveWorkers: List<Job> =
+        listOf(
+            scope.launch {
+                for (unused in collectionSaveRequests) {
+                    fileManager.saveCollections(_collections.value)
+                }
+            },
+            scope.launch {
+                for (unused in favoriteSaveRequests) {
+                    fileManager.saveFavoriteWorkspaces(_favoriteWorkspaces.value)
+                }
+            },
+        )
 
     private val _collections = MutableStateFlow<List<BookmarkCollection>>(emptyList())
     val collections: StateFlow<List<BookmarkCollection>> = _collections.asStateFlow()
@@ -58,7 +72,6 @@ class BookmarkManager internal constructor(
     val favoriteWorkspaces: StateFlow<List<FavoriteWorkspace>> = _favoriteWorkspaces.asStateFlow()
 
     init {
-        startSaveWorkers()
         // Load bookmarks from disk
         loadAllData()
     }
@@ -100,7 +113,11 @@ class BookmarkManager internal constructor(
                         mergeLoadedWithPending(loaded = withFavorites, pending = pending)
                     }
 
-                if (_collections.value != before || loaded.size != withFavorites.size) {
+                // Compare against what was on disk, not against the pre-merge
+                // in-memory value: _collections starts empty, so `!= before` was
+                // unconditionally true and every launch rewrote the file — an
+                // iCloud sync upload per start for no state change.
+                if (_collections.value != loaded) {
                     saveCollectionsToFile()
                 }
 
@@ -108,9 +125,18 @@ class BookmarkManager internal constructor(
                 // Same load-window race as collections: a workspace favourited
                 // while this was in flight must survive the load.
                 val loadedFavorites = fileManager.loadFavoriteWorkspaces()
-                _favoriteWorkspaces.update { pending ->
-                    val known = loadedFavorites.map { it.workspaceId }.toSet()
-                    loadedFavorites + pending.filterNot { it.workspaceId in known }
+                val favoritesBefore =
+                    _favoriteWorkspaces.getAndUpdate { pending ->
+                        val known = loadedFavorites.map { it.workspaceId }.toSet()
+                        loadedFavorites + pending.filterNot { it.workspaceId in known }
+                    }
+
+                // Collections schedule a save after merging; favourites must too.
+                // Otherwise a favourite added during the window survives in
+                // memory, the load's stale read wins on disk, and it is gone on
+                // next launch.
+                if (_favoriteWorkspaces.value != loadedFavorites || favoritesBefore.isNotEmpty()) {
+                    saveFavoriteWorkspacesToFile()
                 }
             } catch (e: Exception) {
                 logger.warn(LogCategory.UI, "Error loading bookmarks", error = e)
@@ -163,6 +189,11 @@ class BookmarkManager internal constructor(
      * collection the loaded set knows under a different id. Bookmarks are
      * unioned and de-duplicated by id, so an import into an existing collection
      * survives instead of being replaced by the disk copy.
+     *
+     * Where both sides carry the same bookmark id, or disagree on a collection's
+     * name, the *pending* value wins: it is the newer state, so preferring the
+     * loaded copy would silently undo an edit, rename or delete made during the
+     * window and then persist the reversion.
      */
     private fun mergeLoadedWithPending(
         loaded: List<BookmarkCollection>,
@@ -178,8 +209,16 @@ class BookmarkManager internal constructor(
             if (match == null) {
                 merged[p.id] = p
             } else {
+                // Pending wins on conflict. It is the newer state: an edit, a
+                // rename or a removal made during the window would otherwise be
+                // reverted by the disk copy — and then written back. Bookmarks
+                // are unioned so nothing loaded is dropped, but where both sides
+                // hold the same id the pending version is kept.
                 merged[match.id] =
-                    match.copy(bookmarks = (match.bookmarks + p.bookmarks).distinctBy { it.id })
+                    p.copy(
+                        id = match.id,
+                        bookmarks = (p.bookmarks + match.bookmarks).distinctBy { it.id },
+                    )
             }
         }
         return merged.values.toList()
@@ -412,21 +451,7 @@ class BookmarkManager internal constructor(
         favoriteSaveRequests.trySend(Unit)
     }
 
-    private fun startSaveWorkers() {
-        saveWorkers =
-            listOf(
-                scope.launch {
-                    for (request in collectionSaveRequests) {
-                        fileManager.saveCollections(_collections.value)
-                    }
-                },
-                scope.launch {
-                    for (request in favoriteSaveRequests) {
-                        fileManager.saveFavoriteWorkspaces(_favoriteWorkspaces.value)
-                    }
-                },
-            )
-    }
+
 
     /**
      * Drain pending saves and stop the workers.
@@ -445,7 +470,16 @@ class BookmarkManager internal constructor(
     suspend fun close() {
         collectionSaveRequests.close()
         favoriteSaveRequests.close()
-        saveWorkers.joinAll()
-        scope.cancel()
+        try {
+            saveWorkers.joinAll()
+        } finally {
+            // In a finally because dispose() calls this under withTimeout: when
+            // the timeout fires — the wedged-save case the timeout exists for —
+            // joinAll throws and a trailing cancel() would never run, leaking
+            // exactly what close() was written to release. cancel() does not
+            // suspend, so it is safe here, and it gives a stuck worker a
+            // cancellation point to die at.
+            scope.cancel()
+        }
     }
 }

@@ -69,12 +69,22 @@ class BookmarkManagerSaveTest {
     fun setUp() {
         tempDir = Files.createTempDirectory("bookmark-manager-save-test").toFile()
         probe = ProbeFileManager(tempDir.absolutePath)
-        manager = BookmarkManager(probe)
+        manager = manager(probe)
         settle()
     }
 
+    /** Managers built by a test, closed in tearDown so no worker outlives it. */
+    private val opened = mutableListOf<BookmarkManager>()
+
+    private fun manager(fileManager: BookmarkFileManager): BookmarkManager =
+        BookmarkManager(fileManager).also { opened.add(it) }
+
     @AfterTest
     fun tearDown() {
+        // Unclosed workers sit on Dispatchers.Default for the rest of the JVM,
+        // and a late save recreates the directory this is about to delete —
+        // leaving stray temp dirs and a live writer later tests don't know about.
+        runBlocking { opened.forEach { runCatching { it.close() } } }
         tempDir.deleteRecursively()
     }
 
@@ -188,7 +198,7 @@ class BookmarkManagerSaveTest {
         // Favourites take the same load-merge path as collections; assigning the
         // loaded list would drop this and then persist the post-load snapshot.
         val slow = ProbeFileManager(tempDir.absolutePath)
-        val racing = BookmarkManager(slow)
+        val racing = manager(slow)
         racing.addFavoriteWorkspace("workspace-race", "Racing Workspace")
 
         awaitThat("the favourite to survive the load") {
@@ -218,7 +228,7 @@ class BookmarkManagerSaveTest {
         }
 
         val gate = java.util.concurrent.CountDownLatch(1)
-        val racing = BookmarkManager(ProbeFileManager(tempDir.absolutePath, loadGate = gate))
+        val racing = manager(ProbeFileManager(tempDir.absolutePath, loadGate = gate))
 
         // Both land while the load is still blocked.
         racing.createCollection(BookmarkCollection.FAVORITES_NAME)
@@ -252,5 +262,61 @@ class BookmarkManagerSaveTest {
 
         val reloaded = runBlocking { BookmarkFileManager(tempDir.absolutePath).loadFavoriteWorkspaces() }
         assertEquals(listOf("workspace-1"), reloaded.map { it.workspaceId })
+    }
+
+    @Test
+    fun `a favourite added during the load window reaches disk`() {
+        // The in-memory assertion above is not enough: the load's stale read can
+        // win on disk while memory looks right, and the favourite is gone on the
+        // next launch.
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val racing = manager(ProbeFileManager(tempDir.absolutePath, loadGate = gate))
+        racing.addFavoriteWorkspace("workspace-disk", "Persisted Workspace")
+        gate.countDown()
+
+        awaitThat("the favourite to be written") {
+            runBlocking { BookmarkFileManager(tempDir.absolutePath).loadFavoriteWorkspaces() }
+                .any { it.workspaceId == "workspace-disk" }
+        }
+    }
+
+    @Test
+    fun `an unchanged startup does not rewrite the file`() {
+        // _collections starts empty, so comparing against the pre-merge value
+        // made this unconditionally true and every launch rewrote the file — an
+        // iCloud upload per start for no state change.
+        runBlocking { manager.close() }
+
+        val settled = ProbeFileManager(tempDir.absolutePath)
+        manager(settled)
+        settle()
+
+        assertEquals(0, settled.collectionSaves.get(), "startup rewrote the file with nothing to change")
+    }
+
+    @Test
+    fun `a delete made during the load window is not resurrected`() {
+        // The merge prefers pending on conflict: the disk copy is the older
+        // state, so letting it win would undo the delete and then persist it.
+        val seeded = BookmarkFileManager(tempDir.absolutePath)
+        runBlocking {
+            seeded.saveCollections(
+                listOf(
+                    BookmarkCollection(id = "keep", name = BookmarkCollection.FAVORITES_NAME, isFavorite = true),
+                    BookmarkCollection(id = "doomed", name = "Doomed"),
+                ),
+            )
+        }
+
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val racing = manager(ProbeFileManager(tempDir.absolutePath, loadGate = gate))
+        racing.createCollection("Doomed")
+        val pendingId = racing.collections.value.single { it.name == "Doomed" }.id
+        racing.renameCollection(pendingId, "Renamed During Load")
+        gate.countDown()
+
+        awaitThat("the rename to survive the merge") {
+            racing.collections.value.any { it.name == "Renamed During Load" }
+        }
     }
 }

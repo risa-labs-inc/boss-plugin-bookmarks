@@ -108,7 +108,7 @@ class BookmarksDynamicPlugin : DynamicPlugin {
                 runBlocking { withTimeout(SAVE_DRAIN_TIMEOUT_MS) { manager.close() } }
             }.onFailure { error ->
                 BossLogger.forComponent("BookmarksDynamicPlugin").warn(
-                    LogCategory.UI,
+                    LogCategory.FILE,
                     "Bookmark save workers did not drain cleanly",
                     mapOf("reason" to (error.message ?: error::class.simpleName.orEmpty()))
                 )
