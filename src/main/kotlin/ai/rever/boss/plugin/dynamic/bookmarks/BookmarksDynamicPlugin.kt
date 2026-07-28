@@ -10,6 +10,10 @@ import ai.rever.boss.plugin.api.WorkspaceDataProvider
 import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkDataProviderImpl
 import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
 import ai.rever.boss.plugin.dynamic.bookmarks.search.BookmarkSearchProvider
+import ai.rever.boss.plugin.logging.BossLogger
+import ai.rever.boss.plugin.logging.LogCategory
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /**
  * Dynamic plugin for Bookmarks panel.
@@ -87,7 +91,30 @@ class BookmarksDynamicPlugin : DynamicPlugin {
         }
     }
 
+    private companion object {
+        /** Shutdown must not hang the host if a save is wedged. */
+        const val SAVE_DRAIN_TIMEOUT_MS = 3_000L
+    }
+
     override fun dispose() {
+        // Drain and stop the manager's save workers before dropping it. They run
+        // on shared Dispatchers.Default threads, so merely nulling the reference
+        // leaves them holding this plugin's classloader alive — and a reload
+        // would then add a second pair of writers competing over the same file
+        // from a stale snapshot. Closing also flushes a save that conflation
+        // has left pending.
+        bookmarkManager?.let { manager ->
+            runCatching {
+                runBlocking { withTimeout(SAVE_DRAIN_TIMEOUT_MS) { manager.close() } }
+            }.onFailure { error ->
+                BossLogger.forComponent("BookmarksDynamicPlugin").warn(
+                    LogCategory.FILE,
+                    "Bookmark save workers did not drain cleanly",
+                    mapOf("reason" to (error.message ?: error::class.simpleName.orEmpty()))
+                )
+            }
+        }
+
         // Note: searchProvider and bookmarkDataProvider will be unregistered by the host when the plugin is unloaded
         searchProvider = null
         bookmarkDataProvider = null

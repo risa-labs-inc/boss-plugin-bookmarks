@@ -11,7 +11,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineName
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
 
 /**
  * Manages bookmark collections and favorite workspaces.
@@ -22,12 +30,40 @@ import kotlinx.coroutines.launch
  * This is the internal bookmark manager for the bookmarks plugin.
  * It is self-contained and does not depend on BossConsole's implementation.
  */
-class BookmarkManager {
+class BookmarkManager internal constructor(
+    // Injectable for tests; production callers use the no-arg constructor and
+    // get the real ~/Documents/BOSS/bookmarks location.
+    private val fileManager: BookmarkFileManager
+) {
+    constructor() : this(BookmarkFileManager())
+
     // Getter (no backing field): see BookmarkFileManager.logger — avoids a
     // Compose-emitted $stable reference the host's ComponentLogger lacks.
     private val logger get() = BossLogger.forComponent("BookmarkManager")
-    private val fileManager = BookmarkFileManager()
-    private val scope = CoroutineScope(Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("BookmarkManager"))
+
+
+
+    // One conflating channel per persisted file. Requests coalesce while a
+    // save is running, and a single consumer keeps writes strictly ordered —
+    // see saveCollectionsToFile.
+    private val collectionSaveRequests = Channel<Unit>(Channel.CONFLATED)
+    private val favoriteSaveRequests = Channel<Unit>(Channel.CONFLATED)
+
+    /** Held so [close] can drain them before the scope goes away. */
+    private val saveWorkers: List<Job> =
+        listOf(
+            scope.launch {
+                for (unused in collectionSaveRequests) {
+                    fileManager.saveCollections(_collections.value)
+                }
+            },
+            scope.launch {
+                for (unused in favoriteSaveRequests) {
+                    fileManager.saveFavoriteWorkspaces(_favoriteWorkspaces.value)
+                }
+            },
+        )
 
     private val _collections = MutableStateFlow<List<BookmarkCollection>>(emptyList())
     val collections: StateFlow<List<BookmarkCollection>> = _collections.asStateFlow()
@@ -50,30 +86,142 @@ class BookmarkManager {
                 val loaded = fileManager.loadCollections()
 
                 // Ensure "Favorites" collection exists
-                if (loaded.none { it.name == BookmarkCollection.FAVORITES_NAME }) {
-                    val favorites = BookmarkCollection(
-                        name = BookmarkCollection.FAVORITES_NAME,
-                        isFavorite = true
-                    )
-                    _collections.value = listOf(favorites) + loaded
+                val withFavorites =
+                    if (loaded.none { it.name == BookmarkCollection.FAVORITES_NAME }) {
+                        listOf(
+                            BookmarkCollection(
+                                name = BookmarkCollection.FAVORITES_NAME,
+                                isFavorite = true
+                            )
+                        ) + loaded
+                    } else {
+                        loaded
+                    }
+
+                // Merge rather than replace. This load is asynchronous, so a
+                // mutation — a bulk import fired right after registration, say
+                // — can land in _collections before it finishes. Assigning
+                // would drop it from memory, and the mutation's own save would
+                // then persist the post-load snapshot, losing it from disk too.
+                //
+                // Merging at collection level is not enough: an import goes into
+                // a collection that usually already exists on disk (Favorites
+                // always does), so a name-keyed filter would discard exactly the
+                // bookmarks it is meant to protect. Union the bookmarks instead.
+                val before =
+                    _collections.getAndUpdate { pending ->
+                        mergeLoadedWithPending(loaded = withFavorites, pending = pending)
+                    }
+
+                // Compare against what was on disk, not against the pre-merge
+                // in-memory value: _collections starts empty, so `!= before` was
+                // unconditionally true and every launch rewrote the file — an
+                // iCloud sync upload per start for no state change.
+                if (_collections.value != loaded) {
                     saveCollectionsToFile()
-                } else {
-                    _collections.value = loaded
                 }
 
                 // Load favorite workspaces
-                _favoriteWorkspaces.value = fileManager.loadFavoriteWorkspaces()
+                // Same load-window race as collections: a workspace favourited
+                // while this was in flight must survive the load.
+                val loadedFavorites = fileManager.loadFavoriteWorkspaces()
+                val favoritesBefore =
+                    _favoriteWorkspaces.getAndUpdate { pending ->
+                        val known = loadedFavorites.map { it.workspaceId }.toSet()
+                        loadedFavorites + pending.filterNot { it.workspaceId in known }
+                    }
+
+                // Collections schedule a save after merging; favourites must too.
+                // Otherwise a favourite added during the window survives in
+                // memory, the load's stale read wins on disk, and it is gone on
+                // next launch.
+                if (_favoriteWorkspaces.value != loadedFavorites || favoritesBefore.isNotEmpty()) {
+                    saveFavoriteWorkspacesToFile()
+                }
             } catch (e: Exception) {
                 logger.warn(LogCategory.UI, "Error loading bookmarks", error = e)
-                // Initialize with default "Favorites" collection on error
-                _collections.value = listOf(
-                    BookmarkCollection(
-                        name = BookmarkCollection.FAVORITES_NAME,
-                        isFavorite = true
-                    )
-                )
+                // Same merge rule as the success path: never clobber a mutation
+                // that arrived while the load was in flight.
+                _collections.update { pending ->
+                    if (pending.any { it.name == BookmarkCollection.FAVORITES_NAME }) {
+                        pending
+                    } else {
+                        listOf(
+                            BookmarkCollection(
+                                name = BookmarkCollection.FAVORITES_NAME,
+                                isFavorite = true
+                            )
+                        ) + pending
+                    }
+                }
             }
         }
+    }
+
+    /**
+     * Apply [transform] to the favorite-workspace list atomically, saving only
+     * if it actually changed. Favourites need the same treatment as
+     * collections — see [mutateCollections].
+     */
+    private fun mutateFavorites(transform: (List<FavoriteWorkspace>) -> List<FavoriteWorkspace>) {
+        val before = _favoriteWorkspaces.getAndUpdate(transform)
+        if (_favoriteWorkspaces.value != before) saveFavoriteWorkspacesToFile()
+    }
+
+    /**
+     * Apply [transform] to the collection list atomically, saving only if it
+     * actually changed.
+     *
+     * `update` retries on conflict, so two mutations racing from different
+     * threads can't lose one another the way a read-then-assign pair would.
+     */
+    private fun mutateCollections(transform: (List<BookmarkCollection>) -> List<BookmarkCollection>) {
+        // getAndUpdate returns the exact pre-update value, so the comparison
+        // can't be against a snapshot that another writer has since replaced.
+        val before = _collections.getAndUpdate(transform)
+        if (_collections.value != before) saveCollectionsToFile()
+    }
+
+    /**
+     * Combine what was on disk with whatever landed while the load was running.
+     *
+     * Collections are matched by id, falling back to name for a pending
+     * collection the loaded set knows under a different id. Bookmarks are
+     * unioned and de-duplicated by id, so an import into an existing collection
+     * survives instead of being replaced by the disk copy.
+     *
+     * Where both sides carry the same bookmark id, or disagree on a collection's
+     * name, the *pending* value wins: it is the newer state, so preferring the
+     * loaded copy would silently undo an edit, rename or delete made during the
+     * window and then persist the reversion.
+     */
+    private fun mergeLoadedWithPending(
+        loaded: List<BookmarkCollection>,
+        pending: List<BookmarkCollection>,
+    ): List<BookmarkCollection> {
+        if (pending.isEmpty()) return loaded
+
+        val merged = LinkedHashMap<String, BookmarkCollection>()
+        loaded.forEach { merged[it.id] = it }
+
+        pending.forEach { p ->
+            val match = merged[p.id] ?: merged.values.firstOrNull { it.name == p.name }
+            if (match == null) {
+                merged[p.id] = p
+            } else {
+                // Pending wins on conflict. It is the newer state: an edit, a
+                // rename or a removal made during the window would otherwise be
+                // reverted by the disk copy — and then written back. Bookmarks
+                // are unioned so nothing loaded is dropped, but where both sides
+                // hold the same id the pending version is kept.
+                merged[match.id] =
+                    p.copy(
+                        id = match.id,
+                        bookmarks = (p.bookmarks + match.bookmarks).distinctBy { it.id },
+                    )
+            }
+        }
+        return merged.values.toList()
     }
 
     // ==================== Bookmark Operations ====================
@@ -82,13 +230,13 @@ class BookmarkManager {
      * Add a bookmark to a collection.
      */
     fun addBookmark(collectionName: String, bookmark: Bookmark) {
-        val collections = _collections.value.toMutableList()
-        val index = collections.indexOfFirst { it.name == collectionName }
-
-        if (index >= 0) {
-            collections[index] = collections[index].addBookmark(bookmark)
-            _collections.value = collections
-            saveCollectionsToFile()
+        mutateCollections { current ->
+            val index = current.indexOfFirst { it.name == collectionName }
+            if (index < 0) {
+                current
+            } else {
+                current.toMutableList().also { it[index] = it[index].addBookmark(bookmark) }
+            }
         }
     }
 
@@ -96,13 +244,13 @@ class BookmarkManager {
      * Remove a bookmark from a collection.
      */
     fun removeBookmark(collectionId: String, bookmarkId: String) {
-        val collections = _collections.value.toMutableList()
-        val index = collections.indexOfFirst { it.id == collectionId }
-
-        if (index >= 0) {
-            collections[index] = collections[index].removeBookmark(bookmarkId)
-            _collections.value = collections
-            saveCollectionsToFile()
+        mutateCollections { current ->
+            val index = current.indexOfFirst { it.id == collectionId }
+            if (index < 0) {
+                current
+            } else {
+                current.toMutableList().also { it[index] = it[index].removeBookmark(bookmarkId) }
+            }
         }
     }
 
@@ -142,13 +290,13 @@ class BookmarkManager {
      * Update a bookmark in a collection.
      */
     fun updateBookmark(collectionId: String, bookmark: Bookmark) {
-        val collections = _collections.value.toMutableList()
-        val index = collections.indexOfFirst { it.id == collectionId }
-
-        if (index >= 0) {
-            collections[index] = collections[index].updateBookmark(bookmark)
-            _collections.value = collections
-            saveCollectionsToFile()
+        mutateCollections { current ->
+            val index = current.indexOfFirst { it.id == collectionId }
+            if (index < 0) {
+                current
+            } else {
+                current.toMutableList().also { it[index] = it[index].updateBookmark(bookmark) }
+            }
         }
     }
 
@@ -156,17 +304,18 @@ class BookmarkManager {
      * Move a bookmark from one collection to another.
      */
     fun moveBookmark(bookmarkId: String, fromCollectionId: String, toCollectionId: String) {
-        val collections = _collections.value.toMutableList()
-        val fromIndex = collections.indexOfFirst { it.id == fromCollectionId }
-        val toIndex = collections.indexOfFirst { it.id == toCollectionId }
+        mutateCollections { current ->
+            val fromIndex = current.indexOfFirst { it.id == fromCollectionId }
+            val toIndex = current.indexOfFirst { it.id == toCollectionId }
+            val bookmark = current.getOrNull(fromIndex)?.findBookmark(bookmarkId)
 
-        if (fromIndex >= 0 && toIndex >= 0) {
-            val bookmark = collections[fromIndex].findBookmark(bookmarkId)
-            if (bookmark != null) {
-                collections[fromIndex] = collections[fromIndex].removeBookmark(bookmarkId)
-                collections[toIndex] = collections[toIndex].addBookmark(bookmark)
-                _collections.value = collections
-                saveCollectionsToFile()
+            if (fromIndex < 0 || toIndex < 0 || bookmark == null) {
+                current
+            } else {
+                current.toMutableList().also {
+                    it[fromIndex] = it[fromIndex].removeBookmark(bookmarkId)
+                    it[toIndex] = it[toIndex].addBookmark(bookmark)
+                }
             }
         }
     }
@@ -175,15 +324,16 @@ class BookmarkManager {
      * Mark a bookmark as accessed (updates lastAccessedAt timestamp).
      */
     fun markBookmarkAsAccessed(collectionId: String, bookmarkId: String) {
-        val collections = _collections.value.toMutableList()
-        val index = collections.indexOfFirst { it.id == collectionId }
+        mutateCollections { current ->
+            val index = current.indexOfFirst { it.id == collectionId }
+            val bookmark = current.getOrNull(index)?.findBookmark(bookmarkId)
 
-        if (index >= 0) {
-            val bookmark = collections[index].findBookmark(bookmarkId)
-            if (bookmark != null) {
-                collections[index] = collections[index].updateBookmark(bookmark.markAsAccessed())
-                _collections.value = collections
-                saveCollectionsToFile()
+            if (index < 0 || bookmark == null) {
+                current
+            } else {
+                current.toMutableList().also {
+                    it[index] = it[index].updateBookmark(bookmark.markAsAccessed())
+                }
             }
         }
     }
@@ -195,8 +345,7 @@ class BookmarkManager {
      */
     fun createCollection(name: String): BookmarkCollection {
         val collection = BookmarkCollection(name = name)
-        _collections.value = _collections.value + collection
-        saveCollectionsToFile()
+        mutateCollections { current -> current + collection }
         return collection
     }
 
@@ -206,12 +355,14 @@ class BookmarkManager {
      * Cannot delete the special "Favorites" collection.
      */
     fun deleteCollection(collectionId: String) {
-        val collection = _collections.value.find { it.id == collectionId }
-
-        // Cannot delete "Favorites" collection
-        if (collection != null && !collection.isFavorite) {
-            _collections.value = _collections.value.filter { it.id != collectionId }
-            saveCollectionsToFile()
+        mutateCollections { current ->
+            // Cannot delete "Favorites" collection
+            val collection = current.find { it.id == collectionId }
+            if (collection == null || collection.isFavorite) {
+                current
+            } else {
+                current.filter { it.id != collectionId }
+            }
         }
     }
 
@@ -219,13 +370,13 @@ class BookmarkManager {
      * Rename a bookmark collection.
      */
     fun renameCollection(collectionId: String, newName: String) {
-        val collections = _collections.value.toMutableList()
-        val index = collections.indexOfFirst { it.id == collectionId }
-
-        if (index >= 0) {
-            collections[index] = collections[index].copy(name = newName)
-            _collections.value = collections
-            saveCollectionsToFile()
+        mutateCollections { current ->
+            val index = current.indexOfFirst { it.id == collectionId }
+            if (index < 0) {
+                current
+            } else {
+                current.toMutableList().also { it[index] = it[index].copy(name = newName) }
+            }
         }
     }
 
@@ -248,10 +399,12 @@ class BookmarkManager {
      * Add a workspace to favorites.
      */
     fun addFavoriteWorkspace(workspaceId: String, workspaceName: String) {
-        val current = _favoriteWorkspaces.value
-        if (current.none { it.workspaceId == workspaceId }) {
-            _favoriteWorkspaces.value = current + FavoriteWorkspace.create(workspaceId, workspaceName)
-            saveFavoriteWorkspacesToFile()
+        mutateFavorites { current ->
+            if (current.any { it.workspaceId == workspaceId }) {
+                current
+            } else {
+                current + FavoriteWorkspace.create(workspaceId, workspaceName)
+            }
         }
     }
 
@@ -259,8 +412,7 @@ class BookmarkManager {
      * Remove a workspace from favorites.
      */
     fun removeFavoriteWorkspace(workspaceId: String) {
-        _favoriteWorkspaces.value = _favoriteWorkspaces.value.filter { it.workspaceId != workspaceId }
-        saveFavoriteWorkspacesToFile()
+        mutateFavorites { current -> current.filter { it.workspaceId != workspaceId } }
     }
 
     /**
@@ -273,20 +425,61 @@ class BookmarkManager {
     // ==================== Persistence ====================
 
     /**
-     * Save collections to file.
+     * Ask for collections to be written.
+     *
+     * Every mutating operation calls this, so a burst — a bulk import, say —
+     * would otherwise queue one full serialise-and-write of an ever-growing
+     * document per mutation: O(n²) bytes for a linear import, where only the
+     * last write's content actually matters.
+     *
+     * A conflating channel gives ordering and coalescing together. Requests
+     * that arrive while a save is in flight collapse into one, and the single
+     * consumer reads state at write time, so the file always converges on the
+     * latest snapshot. Five hundred mutations cost one or two writes.
+     *
+     * Note this only orders writers *inside this instance*. Two host processes,
+     * or a plugin reload, are made safe by the atomic move in
+     * [BookmarkFileManager] — not by this. Don't remove the rename on the
+     * grounds that the writes look serialised here.
      */
     private fun saveCollectionsToFile() {
-        scope.launch {
-            fileManager.saveCollections(_collections.value)
-        }
+        collectionSaveRequests.trySend(Unit)
     }
 
-    /**
-     * Save favorite workspaces to file.
-     */
+    /** Ask for favorite workspaces to be written. See [saveCollectionsToFile]. */
     private fun saveFavoriteWorkspacesToFile() {
-        scope.launch {
-            fileManager.saveFavoriteWorkspaces(_favoriteWorkspaces.value)
+        favoriteSaveRequests.trySend(Unit)
+    }
+
+
+
+    /**
+     * Drain pending saves and stop the workers.
+     *
+     * Without this the two `for (request in channel)` loops run forever on
+     * shared Dispatchers.Default threads: they keep this manager, its state
+     * flows and the plugin classloader reachable, so a dynamic plugin can never
+     * be unloaded, and each reload adds another pair of writers competing over
+     * the same file from its own stale snapshot.
+     *
+     * Closing a channel lets its loop finish the requests already queued and
+     * then exit, so joining here is also the flush-on-shutdown that conflation
+     * would otherwise make easy to lose: a mutation whose trySend lands while a
+     * save is in flight is only written by the *next* drain.
+     */
+    suspend fun close() {
+        collectionSaveRequests.close()
+        favoriteSaveRequests.close()
+        try {
+            saveWorkers.joinAll()
+        } finally {
+            // In a finally because dispose() calls this under withTimeout: when
+            // the timeout fires — the wedged-save case the timeout exists for —
+            // joinAll throws and a trailing cancel() would never run, leaking
+            // exactly what close() was written to release. cancel() does not
+            // suspend, so it is safe here, and it gives a stuck worker a
+            // cancellation point to die at.
+            scope.cancel()
         }
     }
 }
