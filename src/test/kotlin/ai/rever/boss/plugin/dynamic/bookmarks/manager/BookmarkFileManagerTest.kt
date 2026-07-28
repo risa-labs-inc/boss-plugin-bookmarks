@@ -121,9 +121,9 @@ class BookmarkFileManagerTest {
 
     @Test
     fun `concurrent saves converge on one complete document`() = runBlocking {
-        // Bypasses BookmarkManager's mutex deliberately: even with unsynchronised
-        // callers, every write must land whole. Sizes vary so a torn result would
-        // show up as a parse failure (empty list) rather than a plausible one.
+        // Bypasses BookmarkManager's save scheduling deliberately: even with
+        // unsynchronised callers, every write must land whole. A torn result
+        // shows up as a parse failure (empty list) rather than a plausible one.
         val writes = (1..WRITE_ROUNDS).map { round ->
             async(Dispatchers.IO) {
                 fileManager.saveCollections(listOf(collection("Imported-$round", BIG)))

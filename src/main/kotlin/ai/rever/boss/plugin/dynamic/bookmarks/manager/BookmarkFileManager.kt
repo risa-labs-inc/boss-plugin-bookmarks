@@ -9,7 +9,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
-import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
@@ -45,6 +45,9 @@ internal open class BookmarkFileManager(
 
         /** Suffix for in-flight write staging files. */
         private const val TMP_SUFFIX = ".tmp"
+
+        /** Only sweep staging files old enough that no write can still own them. */
+        private const val STALE_TMP_AGE_MS = 5 * 60 * 1000L
 
         /** Default bookmarks directory name under Documents */
         private const val BOOKMARKS_DIR = "BOSS/bookmarks"
@@ -99,7 +102,15 @@ internal open class BookmarkFileManager(
         // otherwise replace the *link* with a regular file rather than writing
         // through it.
         val requested = Paths.get(filePath)
-        val target = if (Files.isSymbolicLink(requested)) requested.toRealPath() else requested
+        // A dangling link (stale relative path, half-synced iCloud) makes
+        // toRealPath throw; falling back to the link path keeps saving instead
+        // of failing every write until someone notices.
+        val target =
+            if (Files.isSymbolicLink(requested)) {
+                runCatching { requested.toRealPath() }.getOrDefault(requested)
+            } else {
+                requested
+            }
 
         // A unique temp file per call, NOT a fixed "$filePath.tmp". Two writers
         // sharing one temp path would corrupt each other's staging file and
@@ -113,7 +124,13 @@ internal open class BookmarkFileManager(
             // not yet written — a present-but-empty collections.json, which is
             // the same loss this method exists to prevent.
             FileChannel.open(tmp, StandardOpenOption.WRITE).use { channel ->
-                channel.write(ByteBuffer.wrap(json.toByteArray(Charsets.UTF_8)))
+                // write() is permitted to write fewer bytes than the buffer
+                // holds. It virtually always completes for a regular file, but a
+                // short write here would stage a truncated document and then
+                // atomically install it — the exact failure this method exists
+                // to eliminate.
+                val buffer = ByteBuffer.wrap(json.toByteArray(Charsets.UTF_8))
+                while (buffer.hasRemaining()) channel.write(buffer)
                 channel.force(true)
             }
 
@@ -124,10 +141,14 @@ internal open class BookmarkFileManager(
 
             try {
                 Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-            } catch (e: AtomicMoveNotSupportedException) {
+            } catch (e: FileSystemException) {
+                // Not just AtomicMoveNotSupportedException: on Windows a target
+                // held open by an indexer, a backup agent or OneDrive surfaces
+                // as AccessDeniedException, and ~/Documents is exactly where
+                // those run. Both are FileSystemException.
                 logger.debug(
                     LogCategory.FILE,
-                    "Atomic move unsupported on this filesystem - falling back to replacing move",
+                    "Atomic move rejected - falling back to a replacing move",
                     mapOf("error" to e.toString())
                 )
                 Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
@@ -158,9 +179,15 @@ internal open class BookmarkFileManager(
      */
     private fun sweepStaleTempFiles() {
         runCatching {
+            val cutoff = System.currentTimeMillis() - STALE_TMP_AGE_MS
             File(getBookmarksDirectory())
                 .listFiles { f: File -> f.isFile && f.name.endsWith(TMP_SUFFIX) }
                 .orEmpty()
+                // Age guard: a second host process, or a previous instance whose
+                // workers are still draining after a reload, may have a write in
+                // flight. Deleting its staging file makes the following move fail
+                // with nothing but a log line to show for it.
+                .filter { it.lastModified() < cutoff }
                 .forEach { it.delete() }
         }
     }
@@ -199,7 +226,7 @@ internal open class BookmarkFileManager(
      *
      * @return List of bookmark collections, empty list if file doesn't exist
      */
-    suspend fun loadCollections(): List<BookmarkCollection> =
+    open suspend fun loadCollections(): List<BookmarkCollection> =
         withContext(Dispatchers.IO) {
             try {
                 sweepStaleTempFiles()
