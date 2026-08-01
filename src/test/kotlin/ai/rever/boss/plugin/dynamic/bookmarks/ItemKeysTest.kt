@@ -46,9 +46,10 @@ class ItemKeysTest {
 
     @Test
     fun `sections whose names prefix one another cannot collide`() {
-        // The ambiguity plain concatenation had: "fav" + "ws-1" and "fav-ws" + "1"
-        // both concatenate to "fav-ws-1". Every section shares one LazyColumn, so
-        // that would have been two items under one key.
+        // The ambiguity plain "-" concatenation had: "fav" + "ws-1" and "fav-ws" +
+        // "1" both concatenate to "fav-ws-1". Every section shares one LazyColumn,
+        // so that would have been two items under one key. The ":" delimiter is
+        // what fixes this one (no section literal contains a colon).
         val favBookmark = keysOf("fav", listOf("ws-1")).single()
         val favWorkspace = keysOf("fav-ws", listOf("1")).single()
 
@@ -56,6 +57,17 @@ class ItemKeysTest {
             favBookmark != favWorkspace,
             "sections collided: both produced $favBookmark",
         )
+    }
+
+    @Test
+    fun `a generated suffix cannot alias a literal id`() {
+        // What the length prefix actually buys. Keyed as "<section>:<id>", the
+        // duplicate "a" would be given "coll:a#2" — the very key the third
+        // element's own id produces.
+        val keys = keysOf("coll", listOf("a", "a", "a#2"))
+
+        assertEquals(keys.size, keys.toSet().size, "a generated key aliased a literal id: $keys")
+        assertEquals(listOf("coll:1:a", "coll:1:a#2", "coll:3:a#2"), keys)
     }
 
     @Test

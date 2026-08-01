@@ -134,11 +134,17 @@ private fun BookmarksPanel(
     //
     // Collections are tracked by LazyColumn item key, workspaces by workspace id,
     // and the asymmetry is deliberate. A collection appears once, so the item key
-    // is the safer identity — should two ever share an id, keying on the id would
+    // is the better identity — should two ever share an id, keying on the id would
     // expand and collapse them together. A workspace appears in *both* the
     // "Favorite Workspaces" and "All Workspaces" sections, where its item keys
     // differ (`fav-ws:` vs `ws:`); keying on the id is what keeps the two rows for
     // one workspace expanding in sync.
+    //
+    // One axis where the item key is *not* strictly better: its disambiguation
+    // suffix is positional within the filtered list, so if a duplicate id ever did
+    // reach the panel, typing in the search box could move which row owns the
+    // "expanded" key. That only bites in the case ids are repaired to prevent, and
+    // the cost is a wrongly-expanded row rather than a crash.
     var expandedCollections by remember { mutableStateOf<Set<String>>(emptySet()) }
     var expandedWorkspaces by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -594,11 +600,7 @@ private fun BookmarksPanel(
             collections = collections.filter { !it.isFavorite && it.id != fromCollectionId },
             onDismiss = { bookmarkToCopy = null },
             onSelect = { targetCollection ->
-                // No explicit new id: the original still holds this one, so the
-                // manager re-ids the copy — and mints it in the same
-                // "bookmark-<millis>-<rand>" shape as everything else, rather
-                // than the bare UUID this used to produce.
-                viewModel.addBookmark(targetCollection.name, bookmark)
+                viewModel.copyBookmark(bookmark, targetCollection.name)
                 bookmarkToCopy = null
             }
         )

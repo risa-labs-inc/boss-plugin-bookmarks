@@ -293,7 +293,10 @@ class BookmarkManager internal constructor(
     private class IdAllocator(existing: Collection<String>) {
         /** Every id the input held, so renumbering never displaces its owner. */
         private val reserved = existing.toHashSet()
-        private val used = HashSet<String>(existing.size)
+
+        // Sized past the 0.75 load factor: HashSet(n) resizes once on the way to
+        // holding n elements, and this holds one entry per id in the file.
+        private val used = HashSet<String>((existing.size / 0.75f).toInt() + 1)
 
         /**
          * Where to resume probing per base id.
@@ -429,6 +432,11 @@ class BookmarkManager internal constructor(
      * Adding N bookmarks individually queues N full rewrites of
      * collections.json — for an import of a few hundred entries that is both
      * slow and, before the write became atomic, a way to lose the file.
+     *
+     * There is now a second reason to prefer it. [withFreeBookmarkIds] scans
+     * every bookmark in the store to find a free id, so it costs O(library) per
+     * call — once for a batch here, but N times for a loop of [addBookmark],
+     * which makes importing into a large library O(N x library).
      */
     fun addBookmarks(collectionName: String, bookmarks: List<Bookmark>) {
         if (bookmarks.isEmpty()) return

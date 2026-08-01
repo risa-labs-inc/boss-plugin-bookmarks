@@ -206,6 +206,30 @@ class BookmarkManagerIdTest {
     }
 
     @Test
+    fun `minted ids carry the documented prefix-millis-random shape`() {
+        // Both BookmarksMcpTools and the copy path describe this shape in comments.
+        val id = manager.newBookmarkId()
+
+        val parts = id.split("-")
+        assertEquals(3, parts.size, "expected bookmark-<millis>-<rand>, got $id")
+        assertEquals("bookmark", parts[0])
+        assertTrue(parts[1].toLongOrNull() != null, "middle field is not a timestamp: $id")
+        assertTrue(parts[2].isNotEmpty(), "missing random suffix: $id")
+        // The random suffix is the whole point — two in a row must differ.
+        assertNotEquals(id, manager.newBookmarkId())
+    }
+
+    @Test
+    fun `repairing an empty list or an empty collection is a no-op`() {
+        assertEquals(emptyList(), manager.withDistinctIds(emptyList()))
+
+        val noBookmarks = listOf(collection("c1", "Empty"), collection("c2", "Also empty"))
+        val repaired = manager.withDistinctIds(noBookmarks)
+        assertEquals(noBookmarks.size, repaired.size)
+        noBookmarks.indices.forEach { assertSame(noBookmarks[it], repaired[it]) }
+    }
+
+    @Test
     fun `a file with unique ids is returned untouched`() {
         val original =
             listOf(
@@ -282,43 +306,90 @@ class BookmarkManagerIdTest {
         }
     }
 
+    /** Counts writes, so "no save happened" is an exact assertion and not a timing one. */
+    private class SaveCountingFileManager(directory: String) : BookmarkFileManager(directory) {
+        val collectionSaves = java.util.concurrent.atomic.AtomicInteger(0)
+
+        override suspend fun saveCollections(collections: List<BookmarkCollection>): Boolean {
+            collectionSaves.incrementAndGet()
+            return super.saveCollections(collections)
+        }
+    }
+
     @Test
     fun `loading a file that needs no repair does not rewrite it`() {
         // The other side of the `_collections.value != onDisk` branch: the
         // assertSame test pins the helper, this pins the decision that uses it.
         // Favorites is seeded by name, or loadAllData would add it and save.
         val seedDir = Files.createTempDirectory("bookmark-manager-id-test-clean").toFile()
-        val seedFiles = BookmarkFileManager(seedDir.absolutePath)
-        runBlocking {
-            seedFiles.saveCollections(
-                listOf(
-                    collection("collection-favs", BookmarkCollection.FAVORITES_NAME, listOf(bookmark("b1"))),
-                    collection("collection-work", "Work", listOf(bookmark("b2"))),
-                ),
+        val seedFiles = SaveCountingFileManager(seedDir.absolutePath)
+        val seeded =
+            listOf(
+                collection("collection-favs", BookmarkCollection.FAVORITES_NAME, listOf(bookmark("b1"))),
+                collection("collection-work", "Work", listOf(bookmark("b2"))),
             )
-        }
+        runBlocking { seedFiles.saveCollections(seeded) }
+        val savesAfterSeeding = seedFiles.collectionSaves.get()
 
         val file = File(seedDir, BookmarkFileManager.COLLECTIONS_FILE)
         val before = file.readText()
-        val modifiedBefore = file.lastModified()
 
         val reloaded = BookmarkManager(seedFiles)
         try {
-            // Await a positive signal that the load actually ran before asserting
-            // the non-event. A bare sleep would let this pass vacuously on a slow
-            // runner — file unmodified because nothing had happened yet — and this
-            // is the only guard on the `!= onDisk` branch.
+            // Await a positive signal that the load ran, so this cannot pass
+            // vacuously by asserting a non-event before anything has happened.
             awaitThat("the load to complete") { reloaded.collections.value.isNotEmpty() }
-            // Short settle on top of the confirmed load, not instead of it: the
-            // save decision happens right after the merge, so give a scheduled
-            // write time to land and be caught.
-            Thread.sleep(250)
 
-            assertEquals(before, file.readText(), "an unaffected file was rewritten")
-            assertEquals(modifiedBefore, file.lastModified(), "an unaffected file was touched")
+            // The deterministic half: the loaded state still describes the same
+            // collections and bookmarks it read, so `_collections.value != onDisk`
+            // was false — which *is* the decision not to save. No timing involved.
+            //
+            // Compared as a projection rather than whole objects: `createdAt` is
+            // dropped from the JSON whenever a record is serialised in the same
+            // millisecond it was constructed (kotlinx `encodeDefaults = false`
+            // re-evaluates the `Clock.System.now()` default and omits the field
+            // when it matches), so two parses of identical JSON can disagree on it.
+            // Pre-existing and orthogonal to this assertion — but it makes a
+            // whole-object comparison across two reads flaky.
+            fun shape(cs: List<BookmarkCollection>) =
+                cs.map { c -> c.id to c.bookmarks.map { it.id } }
+
+            assertEquals(
+                shape(runBlocking { seedFiles.loadCollections() }),
+                shape(reloaded.collections.value),
+                "load changed a file that needed no repair, so it would save",
+            )
+
+            // The observable half: an exact write count rather than mtime, which
+            // some filesystems only report to 1s. Settle rather than sleep a fixed
+            // span — a save scheduled just after the merge still gets counted.
+            settleSaves(seedFiles)
+            assertEquals(
+                savesAfterSeeding,
+                seedFiles.collectionSaves.get(),
+                "an unaffected file was rewritten",
+            )
+            assertEquals(before, file.readText(), "file contents changed")
         } finally {
             runBlocking { runCatching { reloaded.close() } }
             seedDir.deleteRecursively()
+        }
+    }
+
+    /** Wait until the save count has been quiet for a short period. */
+    private fun settleSaves(files: SaveCountingFileManager, quietMillis: Long = 300) {
+        val deadline = System.currentTimeMillis() + 5_000
+        var last = files.collectionSaves.get()
+        var quietSince = System.currentTimeMillis()
+        while (System.currentTimeMillis() < deadline) {
+            Thread.sleep(20)
+            val now = files.collectionSaves.get()
+            if (now != last) {
+                last = now
+                quietSince = System.currentTimeMillis()
+            } else if (System.currentTimeMillis() - quietSince >= quietMillis) {
+                return
+            }
         }
     }
 

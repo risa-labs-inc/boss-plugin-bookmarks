@@ -134,6 +134,21 @@ class BookmarksViewModel(
         _statusMessage.value = "Bookmark added to $collectionName"
     }
 
+    /**
+     * Put a second, independent copy of [bookmark] into [collectionName].
+     *
+     * Mints the new identity here rather than leaving [bookmarkManager] to notice
+     * that the source collection still holds this id and re-id it. Both end up
+     * correct today, but "a copy is a new bookmark" is the intent, and expressing
+     * it as a side effect of collision handling would break silently — as a
+     * disappearing copy, with nothing asserting it — if that handling ever became
+     * skip-on-duplicate instead of re-id.
+     */
+    fun copyBookmark(bookmark: Bookmark, collectionName: String) {
+        bookmarkManager.addBookmark(collectionName, bookmark.copy(id = bookmarkManager.newBookmarkId()))
+        _statusMessage.value = "Bookmark copied to $collectionName"
+    }
+
     fun removeBookmark(collectionId: String, bookmarkId: String) {
         bookmarkManager.removeBookmark(collectionId, bookmarkId)
         _statusMessage.value = "Bookmark removed"
