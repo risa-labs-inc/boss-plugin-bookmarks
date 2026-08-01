@@ -24,30 +24,11 @@ internal data class Keyed<T>(val key: String, val value: T)
  *
  * ### Why the key is `<section>:<id length>:<id>`
  *
- * Two separate hazards, and it is worth keeping them straight — the obvious
- * reason is not the one the length solves.
- *
- * The `:` handles sections. Every section is an item in one shared LazyColumn,
- * so keys must not collide across sections either, and `-` concatenation was
- * ambiguous: section `fav` with a bookmark id of `ws-1` produced the same key as
- * section `fav-ws` with a workspace id of `1`. Splitting on a delimiter no
- * section literal contains removes that.
- *
- * The length does two further things the delimiter cannot.
- *
- * It stops a generated suffix aliasing a *literal* id. Keyed `<section>:<id>`,
- * `["a", "a", "a#2"]` gives the duplicate `coll:a#2` — exactly what the third
- * element's own id produces. The `while` loop below still resolves that
- * (`coll:a#2#2`), so it was never a live crash, but the length removes the
- * overlap between the id and suffix namespaces at the source.
- *
- * It also makes the "no section contains `:`" rule a convenience rather than a
- * requirement. A section named `fav:ws` would break a bare `<section>:<id>`
- * scheme — `("fav:ws", "1")` and `("fav", "ws:1")` both give `fav:ws:1` — but
- * cannot break this one, because the middle field is a number and so can never
- * be read as part of a section name. For the same reason an id that itself
- * contains `:` cannot forge another key, which escaping a delimiter would not
- * guarantee.
+ * Every section is an item in one shared LazyColumn, so keys must not collide
+ * across sections either. Delimiting keeps sections apart; length-prefixing the
+ * id makes the encoding unambiguous whatever an id or a section name contains,
+ * so no `(section, id)` pair can spell another pair's key — nor can a generated
+ * `#n` suffix spell a literal id. `ItemKeysTest` enumerates these cases.
  *
  * Lives outside the Compose file so it can be unit-tested.
  */

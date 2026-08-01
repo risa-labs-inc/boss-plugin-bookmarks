@@ -601,7 +601,7 @@ private fun BookmarksPanel(
             collections = collections.filter { !it.isFavorite && it.id != fromCollectionId },
             onDismiss = { bookmarkToCopy = null },
             onSelect = { targetCollection ->
-                viewModel.copyBookmark(bookmark, targetCollection.name)
+                viewModel.copyBookmark(targetCollection.name, bookmark)
                 bookmarkToCopy = null
             }
         )

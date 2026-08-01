@@ -221,22 +221,34 @@ class BookmarkManager internal constructor(
         val taken = HashSet<String>(((existing + incoming.size) / 0.75f).toInt() + 1)
         current.forEach { collection -> collection.bookmarks.forEach { taken.add(it.id) } }
 
+        // Built only once something actually collides, so the no-collision path
+        // really does allocate nothing — `map` would have built and discarded a
+        // full copy of the batch, which for an import is 20k elements. Note the
+        // check cannot be a pre-scan of `taken` alone: two incoming bookmarks can
+        // share an id that no *existing* bookmark holds, and that has to be caught
+        // too, which is why `taken` accumulates as we go.
         var reIded = 0
-        val result =
-            incoming.map { bookmark ->
-                if (taken.add(bookmark.id)) {
-                    bookmark
-                } else {
-                    reIded++
-                    // Checked, not asserted. A random suffix makes a second
-                    // collision vanishingly unlikely, but the premise of this whole
-                    // function is that an id generator's uniqueness claim is not
-                    // worth trusting — so claim it through `taken` like any other.
-                    var fresh = newBookmarkId()
-                    while (!taken.add(fresh)) fresh = newBookmarkId()
-                    bookmark.copy(id = fresh)
+        var rewritten: MutableList<Bookmark>? = null
+
+        incoming.forEachIndexed { index, bookmark ->
+            if (taken.add(bookmark.id)) {
+                rewritten?.add(bookmark)
+            } else {
+                if (rewritten == null) {
+                    rewritten = ArrayList<Bookmark>(incoming.size).apply {
+                        addAll(incoming.subList(0, index))
+                    }
                 }
+                reIded++
+                // Checked, not asserted. A random suffix makes a second
+                // collision vanishingly unlikely, but the premise of this whole
+                // function is that an id generator's uniqueness claim is not
+                // worth trusting — so claim it through `taken` like any other.
+                var fresh = newBookmarkId()
+                while (!taken.add(fresh)) fresh = newBookmarkId()
+                rewritten.add(bookmark.copy(id = fresh))
             }
+        }
 
         if (reIded > 0) {
             // Once per batch with a count, never per bookmark: an import re-ids by
@@ -252,7 +264,7 @@ class BookmarkManager internal constructor(
                 mapOf("count" to reIded.toString(), "batchSize" to incoming.size.toString()),
             )
         }
-        return if (reIded > 0) result else incoming
+        return rewritten ?: incoming
     }
 
     /**
@@ -274,6 +286,21 @@ class BookmarkManager internal constructor(
      * [findBookmarkForTab] returns an id pair that callers resolve globally.
      */
     internal fun withDistinctIds(collections: List<BookmarkCollection>): List<BookmarkCollection> {
+        // Duplicate *names* are the same class of bug one level up and are not
+        // repaired here — renaming a user's collection behind their back is worse
+        // than the ambiguity. But addBookmark/addBookmarks resolve with
+        // `indexOfFirst { it.name == … }`, so every add lands in whichever comes
+        // first, and that is worth being able to see in a log. See issue #10.
+        val duplicateNames =
+            collections.groupingBy { it.name }.eachCount().filterValues { it > 1 }.keys
+        if (duplicateNames.isNotEmpty()) {
+            logger.warn(
+                LogCategory.UI,
+                "Collections share a name; adds resolved by name will all go to the first",
+                mapOf("names" to duplicateNames.joinToString()),
+            )
+        }
+
         val collectionIds = IdAllocator(collections.map { it.id })
         val bookmarkIds = IdAllocator(collections.flatMap { c -> c.bookmarks.map { it.id } })
 
@@ -462,7 +489,10 @@ class BookmarkManager internal constructor(
      * call — once for a batch here, but N times for a loop of [addBookmark],
      * which makes importing into a large library O(N x library). That cost is
      * per *attempt* rather than per call, since [mutateCollections] re-runs its
-     * transform if the underlying CAS loses a race.
+     * transform if the underlying CAS loses a race — and on a retry the minting
+     * is re-paid too, which for a fully-colliding batch means re-drawing every
+     * id from `SecureRandom`. Correctness is unaffected (a retry just produces
+     * different fresh ids); this is the one place the retry gets expensive.
      */
     fun addBookmarks(collectionName: String, bookmarks: List<Bookmark>) {
         if (bookmarks.isEmpty()) return

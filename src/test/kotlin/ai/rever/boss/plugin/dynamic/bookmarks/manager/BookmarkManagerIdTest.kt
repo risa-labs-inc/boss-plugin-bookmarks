@@ -57,8 +57,16 @@ class BookmarkManagerIdTest {
             workspaceName = "Test",
         )
 
-    private fun collection(id: String, name: String, bookmarks: List<Bookmark> = emptyList()) =
-        BookmarkCollection(id = id, name = name, bookmarks = bookmarks)
+    private fun collection(
+        id: String,
+        name: String,
+        bookmarks: List<Bookmark> = emptyList(),
+        // Defaulted from the name: a collection called "Favorites" without the flag
+        // is a shape the app handles inconsistently (loadAllData recognises it by
+        // name, the panel by the flag), so tests should not quietly model it. See
+        // issue #10.
+        isFavorite: Boolean = name == BookmarkCollection.FAVORITES_NAME,
+    ) = BookmarkCollection(id = id, name = name, bookmarks = bookmarks, isFavorite = isFavorite)
 
     @Test
     fun `collections created in the same millisecond get different ids`() {
@@ -203,6 +211,40 @@ class BookmarkManagerIdTest {
         assertEquals(2, stored.map { it.id }.toSet().size, "the newcomer aliased the original")
         // The existing bookmark keeps its id; the newcomer is the one moved.
         assertEquals("bookmark-same", stored.first { it.tabConfig.title == "Original" }.id)
+    }
+
+    @Test
+    fun `copyBookmark gives the copy its own identity and keeps the original`() {
+        val viewModel = ai.rever.boss.plugin.dynamic.bookmarks.BookmarksViewModel(
+            bookmarkManager = manager,
+            workspaceDataProvider = null,
+            splitViewOperations = null,
+        )
+        val original = bookmark("b1", title = "Shared title")
+        manager.addBookmarks("Work", listOf(original))
+        manager.addBookmarks("Research", listOf(bookmark("other")))
+
+        viewModel.copyBookmark("Research", original)
+
+        val work = manager.collections.value.first { it.name == "Work" }.bookmarks
+        val research = manager.collections.value.first { it.name == "Research" }.bookmarks
+        val copy = research.first { it.tabConfig.title == "Shared title" }
+
+        assertEquals(1, work.size, "the original collection changed")
+        assertEquals("b1", work.single().id, "the original lost its id")
+        assertNotEquals("b1", copy.id, "the copy kept the original's id")
+        assertEquals(original.tabConfig, copy.tabConfig, "the copy is not the same bookmark")
+    }
+
+    @Test
+    fun `adding to a collection that does not exist changes nothing`() {
+        // The `index < 0` early return, which now also skips the re-id.
+        manager.addBookmarks("Work", listOf(bookmark("b1")))
+        val before = manager.collections.value
+
+        manager.addBookmark("No Such Collection", bookmark("b1"))
+
+        assertEquals(before, manager.collections.value, "a missing collection must be a no-op")
     }
 
     @Test

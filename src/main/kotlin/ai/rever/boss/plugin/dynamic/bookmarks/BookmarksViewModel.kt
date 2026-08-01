@@ -154,7 +154,7 @@ class BookmarksViewModel(
      * disappearing copy, with nothing asserting it — if that handling ever became
      * skip-on-duplicate instead of re-id.
      */
-    fun copyBookmark(bookmark: Bookmark, collectionName: String) {
+    fun copyBookmark(collectionName: String, bookmark: Bookmark) {
         bookmarkManager.addBookmark(collectionName, bookmark.copy(id = bookmarkManager.newBookmarkId()))
         _statusMessage.value = "Bookmark copied to $collectionName"
     }
