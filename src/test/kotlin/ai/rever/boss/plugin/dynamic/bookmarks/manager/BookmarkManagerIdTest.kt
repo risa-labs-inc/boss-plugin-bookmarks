@@ -376,7 +376,13 @@ class BookmarkManagerIdTest {
         }
     }
 
-    /** Wait until the save count has been quiet for a short period. */
+    /**
+     * Wait until the save count has been quiet for a short period.
+     *
+     * Throws on the deadline rather than returning: falling out silently would
+     * turn a save that never settles — a wedged writer, exactly the pathology
+     * worth catching — into a *passing* test.
+     */
     private fun settleSaves(files: SaveCountingFileManager, quietMillis: Long = 300) {
         val deadline = System.currentTimeMillis() + 5_000
         var last = files.collectionSaves.get()
@@ -390,6 +396,37 @@ class BookmarkManagerIdTest {
             } else if (System.currentTimeMillis() - quietSince >= quietMillis) {
                 return
             }
+        }
+        throw AssertionError("saves never settled: still writing after 5s (count=$last)")
+    }
+
+    @Test
+    fun `loading a file with no Favorites collection does write one back`() {
+        // The other outcome of the same `!= onDisk` comparison: the no-repair test
+        // asserts it stays false, this asserts it goes true and a write follows.
+        val seedDir = Files.createTempDirectory("bookmark-manager-id-test-nofavs").toFile()
+        val seedFiles = SaveCountingFileManager(seedDir.absolutePath)
+        runBlocking {
+            seedFiles.saveCollections(listOf(collection("collection-work", "Work", listOf(bookmark("b1")))))
+        }
+        val savesAfterSeeding = seedFiles.collectionSaves.get()
+
+        val reloaded = BookmarkManager(seedFiles)
+        try {
+            awaitThat("Favorites to be added and persisted") {
+                runBlocking { seedFiles.loadCollections() }
+                    .any { it.name == BookmarkCollection.FAVORITES_NAME }
+            }
+
+            assertTrue(
+                seedFiles.collectionSaves.get() > savesAfterSeeding,
+                "adding Favorites did not schedule a save",
+            )
+            val onDisk = runBlocking { seedFiles.loadCollections() }
+            assertTrue(onDisk.any { it.name == "Work" }, "the existing collection was lost")
+        } finally {
+            runBlocking { runCatching { reloaded.close() } }
+            seedDir.deleteRecursively()
         }
     }
 

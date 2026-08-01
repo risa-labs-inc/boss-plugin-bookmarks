@@ -129,6 +129,16 @@ class BookmarksViewModel(
 
     // ==================== Bookmark Operations ====================
 
+    /**
+     * Add [bookmark] to [collectionName] under the id it already carries.
+     *
+     * Kept alongside [copyBookmark] rather than folded into it: this is the plain
+     * "store this bookmark" operation, for a bookmark that does not exist yet.
+     * [copyBookmark] is for duplicating one that does, and so has to mint a new
+     * identity. Currently unreferenced in the panel — the copy path was its last
+     * caller — but it is the natural entry point for adding a bookmark and is left
+     * in place deliberately.
+     */
     fun addBookmark(collectionName: String, bookmark: Bookmark) {
         bookmarkManager.addBookmark(collectionName, bookmark)
         _statusMessage.value = "Bookmark added to $collectionName"

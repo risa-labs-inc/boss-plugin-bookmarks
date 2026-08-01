@@ -199,11 +199,12 @@ private fun BookmarksPanel(
     // Scrollbar state
     val listState = rememberLazyListState()
 
-    fun toggleCollectionExpansion(collectionId: String) {
-        expandedCollections = if (expandedCollections.contains(collectionId)) {
-            expandedCollections - collectionId
+    // Takes a LazyColumn item key, not a collection id — see expandedCollections.
+    fun toggleCollectionExpansion(itemKey: String) {
+        expandedCollections = if (expandedCollections.contains(itemKey)) {
+            expandedCollections - itemKey
         } else {
-            expandedCollections + collectionId
+            expandedCollections + itemKey
         }
     }
 

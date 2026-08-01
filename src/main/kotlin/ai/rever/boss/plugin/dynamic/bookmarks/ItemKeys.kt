@@ -30,17 +30,24 @@ internal data class Keyed<T>(val key: String, val value: T)
  * The `:` handles sections. Every section is an item in one shared LazyColumn,
  * so keys must not collide across sections either, and `-` concatenation was
  * ambiguous: section `fav` with a bookmark id of `ws-1` produced the same key as
- * section `fav-ws` with a workspace id of `1`. No section literal contains `:`,
- * so the section is always the text before the first colon and that ambiguity is
- * gone. The delimiter alone is enough for this part.
+ * section `fav-ws` with a workspace id of `1`. Splitting on a delimiter no
+ * section literal contains removes that.
  *
- * The length handles the disambiguation suffix. Without it, a generated key can
- * alias a *literal* id: for `["a", "a", "a#2"]` the second element is keyed
- * `coll:a#2`, which is exactly what the third element's own id produces. The
- * `while` loop below still resolves it (`coll:a#2#2`), so this was never a live
- * crash — but the id and suffix namespaces overlapping is the thing the length
- * prefix removes at the source. Length-prefixing rather than escaping also means
- * an id that itself contains `:` cannot forge another key.
+ * The length does two further things the delimiter cannot.
+ *
+ * It stops a generated suffix aliasing a *literal* id. Keyed `<section>:<id>`,
+ * `["a", "a", "a#2"]` gives the duplicate `coll:a#2` — exactly what the third
+ * element's own id produces. The `while` loop below still resolves that
+ * (`coll:a#2#2`), so it was never a live crash, but the length removes the
+ * overlap between the id and suffix namespaces at the source.
+ *
+ * It also makes the "no section contains `:`" rule a convenience rather than a
+ * requirement. A section named `fav:ws` would break a bare `<section>:<id>`
+ * scheme — `("fav:ws", "1")` and `("fav", "ws:1")` both give `fav:ws:1` — but
+ * cannot break this one, because the middle field is a number and so can never
+ * be read as part of a section name. For the same reason an id that itself
+ * contains `:` cannot forge another key, which escaping a delimiter would not
+ * guarantee.
  *
  * Lives outside the Compose file so it can be unit-tested.
  */
@@ -48,14 +55,26 @@ internal fun <T> List<T>.keyedUniquely(section: String, id: (T) -> String): List
     // Sized past the 0.75 load factor: HashSet(size) resizes once on the way to
     // holding `size` elements.
     val seen = HashSet<String>((size / 0.75f).toInt() + 1)
+
+    // Where to resume probing per base key. Without it every duplicate restarts
+    // at 2 and re-walks the suffixes already handed out, making a group of n
+    // identical ids cost O(n²). This function only does any work at all when
+    // repair did *not* reach the data, so it is precisely the place that should
+    // assume pathological input rather than assume ids are nearly unique.
+    val nextRepeat = HashMap<String, Int>()
+
     return map { item ->
         val rawId = id(item)
         val base = "$section:${rawId.length}:$rawId"
         var key = base
-        var repeat = 2
-        while (!seen.add(key)) {
+        if (!seen.add(key)) {
+            var repeat = nextRepeat[base] ?: 2
             key = "$base#$repeat"
-            repeat++
+            while (!seen.add(key)) {
+                repeat++
+                key = "$base#$repeat"
+            }
+            nextRepeat[base] = repeat + 1
         }
         Keyed(key, item)
     }

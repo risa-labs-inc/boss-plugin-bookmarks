@@ -51,6 +51,12 @@ internal class BookmarkDataProviderImpl(
      * a collection that does not exist, while this creates it. The host ensures
      * the collection before calling either way, so the two agree in practice —
      * but a direct caller should know which it is talking to.
+     *
+     * [addBookmark]'s warning about supplied ids applies here too, and this is
+     * the path where it actually bites: a bulk import hands over thousands of
+     * `Bookmark.generateId()` values, which are millisecond-resolution and so
+     * collide with each other. Expect ids to be re-assigned and read them back
+     * from [collections].
      */
     override fun addBookmarks(collectionName: String, bookmarks: List<Bookmark>) {
         bookmarkManager.addBookmarks(collectionName, bookmarks)

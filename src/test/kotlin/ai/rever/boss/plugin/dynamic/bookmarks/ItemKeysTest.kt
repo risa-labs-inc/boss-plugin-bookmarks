@@ -60,6 +60,37 @@ class ItemKeysTest {
     }
 
     @Test
+    fun `no two of the panel's real sections can produce one key`() {
+        // The invariant that actually matters, over the four strings the panel
+        // passes rather than ad-hoc literals. Ids are drawn to be adversarial:
+        // each is a value that, concatenated after some *other* section name,
+        // could reproduce a third pairing.
+        //
+        // `fav:ws` is in the list on purpose. A section name containing the
+        // delimiter is the case that would break a bare `<section>:<id>` scheme —
+        // ("fav:ws", "1") and ("fav", "ws:1") both give `fav:ws:1` — and it stays
+        // safe here only because the middle field is a length, so it can never be
+        // read as part of a section name. That is what makes "no section literal
+        // contains a colon" a convenience rather than a requirement.
+        val sections = listOf("coll", "fav", "ws", "fav-ws", "fav:ws")
+        val ids = listOf("1", "ws-1", "fav-ws-1", "coll-1", "1:2", "3:abc", "a#2", "ws:1")
+
+        val produced = mutableMapOf<String, Pair<String, String>>()
+        sections.forEach { section ->
+            ids.forEach { id ->
+                val key = keysOf(section, listOf(id)).single()
+                val clash = produced[key]
+                assertTrue(
+                    clash == null,
+                    "($section, $id) and $clash both produced the key $key",
+                )
+                produced[key] = section to id
+            }
+        }
+        assertEquals(sections.size * ids.size, produced.size)
+    }
+
+    @Test
     fun `a generated suffix cannot alias a literal id`() {
         // What the length prefix actually buys. Keyed as "<section>:<id>", the
         // duplicate "a" would be given "coll:a#2" — the very key the third
