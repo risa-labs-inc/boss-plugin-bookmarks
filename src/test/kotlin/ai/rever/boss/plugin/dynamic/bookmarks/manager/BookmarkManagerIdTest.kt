@@ -67,7 +67,7 @@ class BookmarkManagerIdTest {
         val created = (0 until 50).map { manager.createCollection("Collection $it") }
 
         val ids = created.map { it.id }
-        assertEquals(ids.toSet().size, ids.size, "createCollection minted a duplicate id")
+        assertEquals(ids.size, ids.toSet().size, "createCollection minted a duplicate id")
     }
 
     @Test
@@ -76,7 +76,7 @@ class BookmarkManagerIdTest {
         manager.addBookmarks("Other Bookmarks", listOf(bookmark("b2")))
 
         val ids = manager.collections.value.map { it.id }
-        assertEquals(ids.toSet().size, ids.size, "addBookmarks minted a duplicate collection id")
+        assertEquals(ids.size, ids.toSet().size, "addBookmarks minted a duplicate collection id")
     }
 
     @Test
@@ -304,9 +304,15 @@ class BookmarkManagerIdTest {
 
         val reloaded = BookmarkManager(seedFiles)
         try {
-            // No condition to await — we are asserting a *non*-event, so give the
-            // load and any save it might schedule time to land.
-            Thread.sleep(750)
+            // Await a positive signal that the load actually ran before asserting
+            // the non-event. A bare sleep would let this pass vacuously on a slow
+            // runner — file unmodified because nothing had happened yet — and this
+            // is the only guard on the `!= onDisk` branch.
+            awaitThat("the load to complete") { reloaded.collections.value.isNotEmpty() }
+            // Short settle on top of the confirmed load, not instead of it: the
+            // save decision happens right after the merge, so give a scheduled
+            // write time to land and be caught.
+            Thread.sleep(250)
 
             assertEquals(before, file.readText(), "an unaffected file was rewritten")
             assertEquals(modifiedBefore, file.lastModified(), "an unaffected file was touched")

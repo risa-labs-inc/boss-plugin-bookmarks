@@ -20,6 +20,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.Channel
+import java.util.UUID
 
 /**
  * Manages bookmark collections and favorite workspaces.
@@ -170,27 +171,27 @@ class BookmarkManager internal constructor(
     }
 
     /**
-     * Mint a collection id that cannot collide with one minted a moment ago.
+     * Mint an id that cannot collide with one minted a moment ago.
      *
-     * [BookmarkCollection.generateId] is `"collection-<epochMillis>"`, so two
-     * collections created inside the same millisecond get the *same* id — which
-     * a browser import does routinely, creating "Bookmarks Bar" and "Other
-     * Bookmarks" back to back through [createCollection].
+     * The generators in the shared types — `BookmarkCollection.generateId()` and
+     * `Bookmark.generateId()` — are `"<prefix>-<epochMillis>"`, so anything
+     * created inside the same millisecond gets the *same* id. A browser import
+     * does that routinely: two collections back to back through
+     * [createCollection], and bookmarks by the thousand.
      *
-     * That is not a cosmetic clash. Collection ids are the identity every
-     * operation keys off: [renameCollection] and [deleteCollection] hit
-     * whichever collides first, [mergeLoadedWithPending] keys a map by id and so
-     * silently drops one of the pair, and the panel uses the id as a LazyColumn
-     * item key — where a duplicate makes two items share one subcomposition
-     * slot and crashes Compose with "layout state is not idle before measure
-     * starts" as soon as one of them is expanded.
+     * That is not a cosmetic clash. Ids are the identity every operation keys
+     * off: [renameCollection], [deleteCollection], [removeBookmark] and
+     * [moveBookmark] all act on whichever collides first,
+     * [mergeLoadedWithPending] keys a map by collection id and so silently drops
+     * one of a pair, and the panel uses ids to derive LazyColumn item keys — see
+     * `keyedUniquely` for what a duplicate key does to Compose.
      */
-    private fun newCollectionId(): String =
-        "collection-${System.currentTimeMillis()}-${java.util.UUID.randomUUID().toString().take(8)}"
+    private fun mintId(prefix: String): String =
+        "$prefix-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}"
 
-    /** As [newCollectionId], for bookmarks: `Bookmark.generateId()` is also millisecond-only. */
-    internal fun newBookmarkId(): String =
-        "bookmark-${System.currentTimeMillis()}-${java.util.UUID.randomUUID().toString().take(8)}"
+    private fun newCollectionId(): String = mintId("collection")
+
+    internal fun newBookmarkId(): String = mintId("bookmark")
 
     /**
      * Re-id any of [incoming] whose id is already taken in [current], or repeated
@@ -355,6 +356,24 @@ class BookmarkManager internal constructor(
      * name, the *pending* value wins: it is the newer state, so preferring the
      * loaded copy would silently undo an edit, rename or delete made during the
      * window and then persist the reversion.
+     *
+     * KNOWN GAP — the one place this plugin's id-uniqueness invariant does not
+     * hold. [withDistinctIds] repairs the on-disk list *before* this runs, and
+     * [withFreeBookmarkIds] dedupes an incoming bookmark against the pre-load
+     * in-memory list, so neither covers a bookmark added during the load window
+     * whose id matches a *different* bookmark on disk. The `distinctBy` below
+     * then keeps pending and silently drops the disk one.
+     *
+     * Left as-is deliberately. The policy above rests on "same id means same
+     * bookmark", and from ids alone an edit made during the window (pending must
+     * win, and re-iding it would duplicate the bookmark instead) is
+     * indistinguishable from two genuinely different bookmarks that collided —
+     * so any repair here would have to guess, and guessing wrong reverts a user
+     * edit. Repairing the merge *result* would not help either: the drop happens
+     * inside `distinctBy`, before a repair could see it. It needs a
+     * caller-supplied id equal to a historical `bookmark-<epochMillis>`, and both
+     * paths that mint ids now use random suffixes, so the window is
+     * near-theoretical.
      */
     private fun mergeLoadedWithPending(
         loaded: List<BookmarkCollection>,
@@ -422,8 +441,7 @@ class BookmarkManager internal constructor(
 
             // This is the import path, so it is where millisecond-resolution
             // caller ids collide in bulk — see withFreeBookmarkIds.
-            @Suppress("NAME_SHADOWING")
-            val bookmarks = withFreeBookmarkIds(bookmarks, current)
+            val safeBookmarks = withFreeBookmarkIds(bookmarks, current)
 
             if (index >= 0) {
                 // One append of the whole batch, not a fold of per-item copies.
@@ -433,7 +451,7 @@ class BookmarkManager internal constructor(
                 // thread the host called from. A browser import is 10-20k
                 // entries, which is where that stops being theoretical.
                 current.toMutableList().also {
-                    it[index] = it[index].copy(bookmarks = it[index].bookmarks + bookmarks)
+                    it[index] = it[index].copy(bookmarks = it[index].bookmarks + safeBookmarks)
                 }
             } else {
                 current +
@@ -442,7 +460,7 @@ class BookmarkManager internal constructor(
                         // several collections in a row — see newCollectionId.
                         id = newCollectionId(),
                         name = collectionName,
-                        bookmarks = bookmarks,
+                        bookmarks = safeBookmarks,
                         // Without this, importing into "Favorites" would create a
                         // collection named Favorites that getFavoritesCollection()
                         // — which matches on the flag — cannot find, and that

@@ -130,7 +130,15 @@ private fun BookmarksPanel(
     var allWorkspacesExpanded by remember { mutableStateOf(false) }
     var favoriteWorkspacesExpanded by remember { mutableStateOf(true) }
 
-    // Track expansion state for each collection and workspace
+    // Track expansion state for each collection and workspace.
+    //
+    // Collections are tracked by LazyColumn item key, workspaces by workspace id,
+    // and the asymmetry is deliberate. A collection appears once, so the item key
+    // is the safer identity — should two ever share an id, keying on the id would
+    // expand and collapse them together. A workspace appears in *both* the
+    // "Favorite Workspaces" and "All Workspaces" sections, where its item keys
+    // differ (`fav-ws:` vs `ws:`); keying on the id is what keeps the two rows for
+    // one workspace expanding in sync.
     var expandedCollections by remember { mutableStateOf<Set<String>>(emptySet()) }
     var expandedWorkspaces by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -586,7 +594,11 @@ private fun BookmarksPanel(
             collections = collections.filter { !it.isFavorite && it.id != fromCollectionId },
             onDismiss = { bookmarkToCopy = null },
             onSelect = { targetCollection ->
-                viewModel.addBookmark(targetCollection.name, bookmark.copy(id = java.util.UUID.randomUUID().toString()))
+                // No explicit new id: the original still holds this one, so the
+                // manager re-ids the copy — and mints it in the same
+                // "bookmark-<millis>-<rand>" shape as everything else, rather
+                // than the bare UUID this used to produce.
+                viewModel.addBookmark(targetCollection.name, bookmark)
                 bookmarkToCopy = null
             }
         )
@@ -1689,50 +1701,6 @@ private fun CollectionSelectionDialog(
         backgroundColor = DarkBackground,
         shape = RoundedCornerShape(8.dp)
     )
-}
-
-// ==================== LazyColumn Keys ====================
-
-/** An element paired with the LazyColumn item key it is rendered under. */
-private data class Keyed<T>(val key: String, val value: T)
-
-/**
- * Pair each element with an item key that is unique within the list, suffixing
- * repeats.
- *
- * A LazyColumn key must be unique. Two items sharing one key share a single
- * subcomposition slot — and therefore a single LayoutNode — so the list measures
- * that one node twice in a pass and Compose throws `IllegalStateException:
- * layout state is not idle before measure starts`. Collapsed rows are the same
- * height and can hide it; expanding one of the pair changes its size and
- * triggers the second measure.
- *
- * Ids are supposed to be unique and [BookmarkManager.withDistinctIds] repairs
- * them on load, so in practice nothing is suffixed here. This is the backstop
- * that keeps *any* duplicate — a hand-edited file, a future host path that
- * inserts collections directly — from taking the whole panel down.
- *
- * The id is length-delimited rather than just concatenated after [section].
- * Every section is an item in one shared LazyColumn, and plain concatenation is
- * ambiguous across them: section `fav` with a bookmark id of `ws-1` would
- * produce the same key as section `fav-ws` with a workspace id of `1`. No
- * section literal contains `:`, so the first two fields always parse back
- * unambiguously — and unlike escaping, this cannot be defeated by an id
- * containing the delimiter.
- */
-private fun <T> List<T>.keyedUniquely(section: String, id: (T) -> String): List<Keyed<T>> {
-    val seen = HashSet<String>()
-    return map { item ->
-        val rawId = id(item)
-        val base = "$section:${rawId.length}:$rawId"
-        var key = base
-        var repeat = 2
-        while (!seen.add(key)) {
-            key = "$base#$repeat"
-            repeat++
-        }
-        Keyed(key, item)
-    }
 }
 
 // ==================== Filtering Functions ====================

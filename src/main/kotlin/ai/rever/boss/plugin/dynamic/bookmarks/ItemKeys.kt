@@ -1,0 +1,50 @@
+package ai.rever.boss.plugin.dynamic.bookmarks
+
+/** An element paired with the LazyColumn item key it is rendered under. */
+internal data class Keyed<T>(val key: String, val value: T)
+
+/**
+ * Pair each element with an item key that is unique within the list, suffixing
+ * repeats.
+ *
+ * ### Why uniqueness matters
+ *
+ * A LazyColumn key must be unique. Two items sharing one key share a single
+ * subcomposition slot — and therefore a single `LayoutNode` — so the list
+ * measures that one node twice in a pass and Compose throws
+ * `IllegalStateException: layout state is not idle before measure starts`.
+ * Collapsed rows are the same height and can hide it; expanding one of the pair
+ * changes its size and triggers the second measure. That is the crash this
+ * whole file exists to prevent (BossConsole-Releases#16).
+ *
+ * Ids are supposed to be unique and [manager.BookmarkManager.withDistinctIds]
+ * repairs them on load, so in practice nothing is suffixed here. This is the
+ * backstop that keeps *any* duplicate — a hand-edited file, a future host path
+ * that inserts collections directly — from taking the whole panel down.
+ *
+ * ### Why the id is length-delimited
+ *
+ * Every section is an item in one shared LazyColumn, so keys must not collide
+ * *across* sections either, and plain concatenation is ambiguous: section `fav`
+ * with a bookmark id of `ws-1` would produce the same key as section `fav-ws`
+ * with a workspace id of `1`. Prefixing the id with its length fixes that. No
+ * section literal contains `:`, so the first two fields always parse back
+ * unambiguously — and unlike escaping a delimiter, this cannot be defeated by an
+ * id that happens to contain the delimiter.
+ *
+ * Lives outside the Compose file so it can be unit-tested.
+ */
+internal fun <T> List<T>.keyedUniquely(section: String, id: (T) -> String): List<Keyed<T>> {
+    val seen = HashSet<String>(size)
+    return map { item ->
+        val rawId = id(item)
+        val base = "$section:${rawId.length}:$rawId"
+        var key = base
+        var repeat = 2
+        while (!seen.add(key)) {
+            key = "$base#$repeat"
+            repeat++
+        }
+        Keyed(key, item)
+    }
+}

@@ -26,6 +26,18 @@ internal class BookmarkDataProviderImpl(
 
     // ==================== Bookmark Operations ====================
 
+    /**
+     * Note the id you supply is not guaranteed to be the id that gets stored.
+     *
+     * `Bookmark.generateId()` is millisecond-resolution, so a caller adding two
+     * bookmarks in quick succession hands us the same id twice. Rather than let
+     * that alias an existing bookmark — which would make `removeBookmark` and
+     * `updateBookmark` act on whichever matched first — the manager re-ids the
+     * newcomer. Since this returns Unit there is nothing to report it back
+     * through, so a caller that mints an id and later calls
+     * [updateBookmark]/[removeBookmark] with it may find it no longer resolves.
+     * Read the id back from [collections] instead of assuming it survived.
+     */
     override fun addBookmark(collectionName: String, bookmark: Bookmark) {
         bookmarkManager.addBookmark(collectionName, bookmark)
     }
