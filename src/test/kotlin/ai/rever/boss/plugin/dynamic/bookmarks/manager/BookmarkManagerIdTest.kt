@@ -40,6 +40,20 @@ class BookmarkManagerIdTest {
         tempDir = Files.createTempDirectory("bookmark-manager-id-test").toFile()
         fileManager = BookmarkFileManager(tempDir.absolutePath)
         manager = BookmarkManager(fileManager)
+
+        // Wait for the constructor's asynchronous load to land before any test
+        // touches this manager. Without it every test races loadAllData: the load
+        // adds the Favorites collection, so a test that snapshots
+        // `collections.value` and then compares against it later can see the
+        // snapshot change underneath it for reasons that have nothing to do with
+        // what it is asserting. That is a real failure mode, not a theoretical
+        // one — it took down a release build after passing locally.
+        //
+        // Tests that need to act *inside* the load window build their own manager
+        // with GatedFileManager instead.
+        awaitThat("the initial load to settle") {
+            manager.collections.value.any { it.name == BookmarkCollection.FAVORITES_NAME }
+        }
     }
 
     @AfterTest
