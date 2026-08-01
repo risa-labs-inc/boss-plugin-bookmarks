@@ -129,9 +129,34 @@ class BookmarksViewModel(
 
     // ==================== Bookmark Operations ====================
 
+    /**
+     * Add [bookmark] to [collectionName] under the id it already carries.
+     *
+     * Kept alongside [copyBookmark] rather than folded into it: this is the plain
+     * "store this bookmark" operation, for a bookmark that does not exist yet.
+     * [copyBookmark] is for duplicating one that does, and so has to mint a new
+     * identity. Currently unreferenced in the panel — the copy path was its last
+     * caller — but it is the natural entry point for adding a bookmark and is left
+     * in place deliberately.
+     */
     fun addBookmark(collectionName: String, bookmark: Bookmark) {
         bookmarkManager.addBookmark(collectionName, bookmark)
         _statusMessage.value = "Bookmark added to $collectionName"
+    }
+
+    /**
+     * Put a second, independent copy of [bookmark] into [collectionName].
+     *
+     * Mints the new identity here rather than leaving [bookmarkManager] to notice
+     * that the source collection still holds this id and re-id it. Both end up
+     * correct today, but "a copy is a new bookmark" is the intent, and expressing
+     * it as a side effect of collision handling would break silently — as a
+     * disappearing copy, with nothing asserting it — if that handling ever became
+     * skip-on-duplicate instead of re-id.
+     */
+    fun copyBookmark(collectionName: String, bookmark: Bookmark) {
+        bookmarkManager.addBookmark(collectionName, bookmark.copy(id = bookmarkManager.newBookmarkId()))
+        _statusMessage.value = "Bookmark copied to $collectionName"
     }
 
     fun removeBookmark(collectionId: String, bookmarkId: String) {

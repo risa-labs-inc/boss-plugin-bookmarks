@@ -20,6 +20,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.Channel
+import java.util.UUID
 
 /**
  * Manages bookmark collections and favorite workspaces.
@@ -83,13 +84,19 @@ class BookmarkManager internal constructor(
         scope.launch {
             try {
                 // Load collections
-                val loaded = fileManager.loadCollections()
+                val onDisk = fileManager.loadCollections()
+
+                // Repair id collisions before anything keys off an id. Files
+                // written by older versions can hold two collections under one
+                // id — see withDistinctIds.
+                val loaded = withDistinctIds(onDisk)
 
                 // Ensure "Favorites" collection exists
                 val withFavorites =
                     if (loaded.none { it.name == BookmarkCollection.FAVORITES_NAME }) {
                         listOf(
                             BookmarkCollection(
+                                id = newCollectionId(),
                                 name = BookmarkCollection.FAVORITES_NAME,
                                 isFavorite = true
                             )
@@ -117,7 +124,11 @@ class BookmarkManager internal constructor(
                 // in-memory value: _collections starts empty, so `!= before` was
                 // unconditionally true and every launch rewrote the file — an
                 // iCloud sync upload per start for no state change.
-                if (_collections.value != loaded) {
+                //
+                // `onDisk` rather than the post-repair `loaded`, or an id
+                // collision that withDistinctIds just fixed would live only in
+                // memory and come back on the next launch.
+                if (_collections.value != onDisk) {
                     saveCollectionsToFile()
                 }
 
@@ -148,6 +159,7 @@ class BookmarkManager internal constructor(
                     } else {
                         listOf(
                             BookmarkCollection(
+                                id = newCollectionId(),
                                 name = BookmarkCollection.FAVORITES_NAME,
                                 isFavorite = true
                             )
@@ -155,6 +167,240 @@ class BookmarkManager internal constructor(
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Mint an id that cannot collide with one minted a moment ago.
+     *
+     * The generators in the shared types — `BookmarkCollection.generateId()` and
+     * `Bookmark.generateId()` — are `"<prefix>-<epochMillis>"`, so anything
+     * created inside the same millisecond gets the *same* id. A browser import
+     * does that routinely: two collections back to back through
+     * [createCollection], and bookmarks by the thousand.
+     *
+     * That is not a cosmetic clash. Ids are the identity every operation keys
+     * off: [renameCollection], [deleteCollection], [removeBookmark] and
+     * [moveBookmark] all act on whichever collides first,
+     * [mergeLoadedWithPending] keys a map by collection id and so silently drops
+     * one of a pair, and the panel uses ids to derive LazyColumn item keys — see
+     * `keyedUniquely` for what a duplicate key does to Compose.
+     */
+    private fun mintId(prefix: String): String =
+        "$prefix-${System.currentTimeMillis()}-${UUID.randomUUID().toString().take(8)}"
+
+    private fun newCollectionId(): String = mintId("collection")
+
+    internal fun newBookmarkId(): String = mintId("bookmark")
+
+    /**
+     * Re-id any of [incoming] whose id is already taken in [current], or repeated
+     * inside the batch itself.
+     *
+     * Uniqueness has to hold at the point bookmarks are written, not only when
+     * they are read back: callers hand us `Bookmark`s carrying the default
+     * millisecond `Bookmark.generateId()`, and a browser import adds thousands in
+     * a tight loop. Repairing on load alone would leave those duplicates live in
+     * memory and on disk until the next launch — a window in which
+     * [removeBookmark], [updateBookmark] and [moveBookmark] all resolve by id and
+     * act on whichever matches first, the search provider publishes a duplicate
+     * result id, and [mergeLoadedWithPending]'s `distinctBy { it.id }` drops one
+     * of a colliding pair.
+     *
+     * Returns [incoming] itself when nothing collides, so the common path adds no
+     * copy and an unchanged list still compares equal.
+     */
+    /**
+     * Single-bookmark form of [withFreeBookmarkIds], without the set.
+     *
+     * Returns [bookmark] itself when its id is free, so the ordinary add path
+     * allocates nothing. Kept separate rather than folded in because the batch
+     * form needs a set to catch ids repeated *within* the batch, and one add
+     * cannot repeat itself.
+     */
+    private fun withFreeId(
+        bookmark: Bookmark,
+        current: List<BookmarkCollection>,
+    ): Bookmark {
+        fun taken(id: String) = current.any { c -> c.bookmarks.any { it.id == id } }
+        if (!taken(bookmark.id)) return bookmark
+
+        var fresh = newBookmarkId()
+        while (taken(fresh)) fresh = newBookmarkId()
+        logger.warn(
+            LogCategory.UI,
+            "Re-assigned a bookmark id that was already in use",
+            mapOf("suppliedId" to bookmark.id, "assignedId" to fresh),
+        )
+        return bookmark.copy(id = fresh)
+    }
+
+    private fun withFreeBookmarkIds(
+        incoming: List<Bookmark>,
+        current: List<BookmarkCollection>,
+    ): List<Bookmark> {
+        // Pre-sized past the 0.75 load factor: this holds one entry per bookmark
+        // in the store, and a library of tens of thousands would otherwise rehash
+        // its way up on the add path.
+        val existing = current.sumOf { it.bookmarks.size }
+        val taken = HashSet<String>(((existing + incoming.size) / 0.75f).toInt() + 1)
+        current.forEach { collection -> collection.bookmarks.forEach { taken.add(it.id) } }
+
+        // Built only once something actually collides, so the no-collision path
+        // really does allocate nothing — `map` would have built and discarded a
+        // full copy of the batch, which for an import is 20k elements. Note the
+        // check cannot be a pre-scan of `taken` alone: two incoming bookmarks can
+        // share an id that no *existing* bookmark holds, and that has to be caught
+        // too, which is why `taken` accumulates as we go.
+        var reIded = 0
+        var rewritten: MutableList<Bookmark>? = null
+
+        incoming.forEachIndexed { index, bookmark ->
+            if (taken.add(bookmark.id)) {
+                rewritten?.add(bookmark)
+            } else {
+                if (rewritten == null) {
+                    rewritten = ArrayList<Bookmark>(incoming.size).apply {
+                        addAll(incoming.subList(0, index))
+                    }
+                }
+                reIded++
+                // Checked, not asserted. A random suffix makes a second
+                // collision vanishingly unlikely, but the premise of this whole
+                // function is that an id generator's uniqueness claim is not
+                // worth trusting — so claim it through `taken` like any other.
+                var fresh = newBookmarkId()
+                while (!taken.add(fresh)) fresh = newBookmarkId()
+                rewritten.add(bookmark.copy(id = fresh))
+            }
+        }
+
+        if (reIded > 0) {
+            // Once per batch with a count, never per bookmark: an import re-ids by
+            // the thousand. Logged at all because the host cannot observe this any
+            // other way — addBookmark returns Unit, so from its side the symptom is
+            // "the id I minted no longer resolves".
+            //
+            // May repeat if mutateCollections' transform re-runs on CAS
+            // contention; that is rare and a duplicate info line is harmless.
+            // warn, not info: the KDoc on BookmarkDataProviderImpl.addBookmark is
+            // explicit that a host has no other way to see this, and that a later
+            // remove/update with the supplied id will quietly fail to resolve.
+            // Someone debugging "my delete did nothing" is far likelier to have
+            // warn enabled than info.
+            logger.warn(
+                LogCategory.UI,
+                "Re-assigned bookmark ids that were already in use",
+                mapOf("count" to reIded.toString(), "batchSize" to incoming.size.toString()),
+            )
+        }
+        return rewritten ?: incoming
+    }
+
+    /**
+     * Return [collections] with every collection id, and every bookmark id,
+     * distinct — repairing what older versions already wrote to disk.
+     *
+     * Colliding ids are not hypothetical: see [newCollectionId] for how
+     * millisecond-resolution ids collide, and note that `Bookmark.generateId()`
+     * has the same shape. This runs on load so a file written before the fix
+     * stops crashing the panel, rather than only new files being safe.
+     *
+     * The first holder of an id keeps it and later ones are renumbered, so the
+     * repair touches as little as possible and is idempotent: the ids it hands
+     * out are themselves unused, so a second load is a no-op and does not
+     * rewrite the file.
+     *
+     * Bookmark ids are made unique across *all* collections, not just within
+     * one. The search provider publishes `bookmark.id` as the result id, and
+     * [findBookmarkForTab] returns an id pair that callers resolve globally.
+     */
+    internal fun withDistinctIds(collections: List<BookmarkCollection>): List<BookmarkCollection> {
+        // Duplicate *names* are the same class of bug one level up and are not
+        // repaired here — renaming a user's collection behind their back is worse
+        // than the ambiguity. But addBookmark/addBookmarks resolve with
+        // `indexOfFirst { it.name == … }`, so every add lands in whichever comes
+        // first, and that is worth being able to see in a log. See issue #10.
+        val duplicateNames =
+            collections.groupingBy { it.name }.eachCount().filterValues { it > 1 }.keys
+        if (duplicateNames.isNotEmpty()) {
+            logger.warn(
+                LogCategory.UI,
+                "Collections share a name; adds resolved by name will all go to the first",
+                mapOf("names" to duplicateNames.joinToString()),
+            )
+        }
+
+        val collectionIds = IdAllocator(collections.map { it.id })
+        val bookmarkIds = IdAllocator(collections.flatMap { c -> c.bookmarks.map { it.id } })
+
+        return collections.map { collection ->
+            val collectionId = collectionIds.claim(collection.id)
+
+            var bookmarksChanged = false
+            val bookmarks =
+                collection.bookmarks.map { bookmark ->
+                    val bookmarkId = bookmarkIds.claim(bookmark.id)
+                    if (bookmarkId == bookmark.id) {
+                        bookmark
+                    } else {
+                        bookmarksChanged = true
+                        bookmark.copy(id = bookmarkId)
+                    }
+                }
+
+            when {
+                collectionId != collection.id ->
+                    collection.copy(id = collectionId, bookmarks = bookmarks)
+                bookmarksChanged -> collection.copy(bookmarks = bookmarks)
+                // Untouched collections are returned as-is so an unaffected file
+                // compares equal to what was loaded and no save is scheduled.
+                else -> collection
+            }
+        }
+    }
+
+    /**
+     * Hands out ids that are distinct from each other *and* from every id the
+     * input already held.
+     *
+     * Reserving the whole input up front is what keeps "the first holder of an
+     * id keeps it" true. Probing only against the ids seen so far displaces a
+     * legitimate later owner: for `["c", "c", "c-2"]` the duplicate `c` would
+     * take `c-2`, and the third collection — which owns `c-2` on disk — would be
+     * pushed to `c-2-2`. Reserved, it becomes `["c", "c-3", "c-2"]`, and a
+     * second pass over that is a no-op.
+     */
+    private class IdAllocator(existing: Collection<String>) {
+        /** Every id the input held, so renumbering never displaces its owner. */
+        private val reserved = existing.toHashSet()
+
+        // Sized past the 0.75 load factor: HashSet(n) resizes once on the way to
+        // holding n elements, and this holds one entry per id in the file.
+        private val used = HashSet<String>((existing.size / 0.75f).toInt() + 1)
+
+        /**
+         * Where to resume probing per base id.
+         *
+         * Without it each duplicate restarts at 2 and re-walks the suffixes
+         * already handed out — quadratic in the size of a collided group, on the
+         * startup path, for exactly the large-import files this repair targets.
+         */
+        private val nextSuffix = HashMap<String, Int>()
+
+        fun claim(id: String): String {
+            if (used.add(id)) return id
+
+            var suffix = nextSuffix[id] ?: 2
+            var candidate = "$id-$suffix"
+            // `in reserved` is checked first and short-circuits, so a candidate
+            // belonging to a later owner is skipped without being consumed.
+            while (candidate in reserved || !used.add(candidate)) {
+                suffix++
+                candidate = "$id-$suffix"
+            }
+            nextSuffix[id] = suffix + 1
+            return candidate
         }
     }
 
@@ -194,6 +440,24 @@ class BookmarkManager internal constructor(
      * name, the *pending* value wins: it is the newer state, so preferring the
      * loaded copy would silently undo an edit, rename or delete made during the
      * window and then persist the reversion.
+     *
+     * KNOWN GAP — the one place this plugin's id-uniqueness invariant does not
+     * hold. [withDistinctIds] repairs the on-disk list *before* this runs, and
+     * [withFreeBookmarkIds] dedupes an incoming bookmark against the pre-load
+     * in-memory list, so neither covers a bookmark added during the load window
+     * whose id matches a *different* bookmark on disk. The `distinctBy` below
+     * then keeps pending and silently drops the disk one.
+     *
+     * Left as-is deliberately. The policy above rests on "same id means same
+     * bookmark", and from ids alone an edit made during the window (pending must
+     * win, and re-iding it would duplicate the bookmark instead) is
+     * indistinguishable from two genuinely different bookmarks that collided —
+     * so any repair here would have to guess, and guessing wrong reverts a user
+     * edit. Repairing the merge *result* would not help either: the drop happens
+     * inside `distinctBy`, before a repair could see it. It needs a
+     * caller-supplied id equal to a historical `bookmark-<epochMillis>`, and both
+     * paths that mint ids now use random suffixes, so the window is
+     * near-theoretical.
      */
     private fun mergeLoadedWithPending(
         loaded: List<BookmarkCollection>,
@@ -204,11 +468,28 @@ class BookmarkManager internal constructor(
         val merged = LinkedHashMap<String, BookmarkCollection>()
         loaded.forEach { merged[it.id] = it }
 
+        // Snapshotted before any pending is folded in, and each entry is claimed
+        // at most once. The name fallback below is for "a pending collection the
+        // loaded set knows under a different id" — it must only ever match
+        // something that came from disk.
+        //
+        // Without this it also matched pendings already added to `merged`, so two
+        // same-named collections created during the load window collapsed into
+        // one and the second silently replaced the first. That is reachable: two
+        // createCollection("Twin") calls, or a browser import creating two
+        // like-named folders, while the initial load is still in flight.
+        // Claim-once matters for the same reason — otherwise two pendings both
+        // match the one loaded collection of that name and collapse anyway.
+        val unclaimedFromDisk = HashSet(merged.keys)
+
         pending.forEach { p ->
-            val match = merged[p.id] ?: merged.values.firstOrNull { it.name == p.name }
+            val match =
+                merged[p.id]
+                    ?: merged.values.firstOrNull { it.id in unclaimedFromDisk && it.name == p.name }
             if (match == null) {
                 merged[p.id] = p
             } else {
+                unclaimedFromDisk.remove(match.id)
                 // Pending wins on conflict. It is the newer state: an edit, a
                 // rename or a removal made during the window would otherwise be
                 // reverted by the disk copy — and then written back. Bookmarks
@@ -235,7 +516,12 @@ class BookmarkManager internal constructor(
             if (index < 0) {
                 current
             } else {
-                current.toMutableList().also { it[index] = it[index].addBookmark(bookmark) }
+                // Deliberately not withFreeBookmarkIds: that builds a HashSet over
+                // every bookmark in the store, and this is the "user clicked the
+                // star" path, re-run on every CAS retry. Scanning for one id costs
+                // the same O(library) walk without the allocation.
+                val safe = withFreeId(bookmark, current)
+                current.toMutableList().also { it[index] = it[index].addBookmark(safe) }
             }
         }
     }
@@ -248,6 +534,16 @@ class BookmarkManager internal constructor(
      * Adding N bookmarks individually queues N full rewrites of
      * collections.json — for an import of a few hundred entries that is both
      * slow and, before the write became atomic, a way to lose the file.
+     *
+     * There is now a second reason to prefer it. [withFreeBookmarkIds] scans
+     * every bookmark in the store to find a free id, so it costs O(library) per
+     * call — once for a batch here, but N times for a loop of [addBookmark],
+     * which makes importing into a large library O(N x library). That cost is
+     * per *attempt* rather than per call, since [mutateCollections] re-runs its
+     * transform if the underlying CAS loses a race — and on a retry the minting
+     * is re-paid too, which for a fully-colliding batch means re-drawing every
+     * id from `SecureRandom`. Correctness is unaffected (a retry just produces
+     * different fresh ids); this is the one place the retry gets expensive.
      */
     fun addBookmarks(collectionName: String, bookmarks: List<Bookmark>) {
         if (bookmarks.isEmpty()) return
@@ -258,6 +554,10 @@ class BookmarkManager internal constructor(
             // leave a duplicate empty collection behind.
             val index = current.indexOfFirst { it.name == collectionName }
 
+            // This is the import path, so it is where millisecond-resolution
+            // caller ids collide in bulk — see withFreeBookmarkIds.
+            val safeBookmarks = withFreeBookmarkIds(bookmarks, current)
+
             if (index >= 0) {
                 // One append of the whole batch, not a fold of per-item copies.
                 // getAndUpdate re-runs this transform on CAS contention, and
@@ -266,13 +566,16 @@ class BookmarkManager internal constructor(
                 // thread the host called from. A browser import is 10-20k
                 // entries, which is where that stops being theoretical.
                 current.toMutableList().also {
-                    it[index] = it[index].copy(bookmarks = it[index].bookmarks + bookmarks)
+                    it[index] = it[index].copy(bookmarks = it[index].bookmarks + safeBookmarks)
                 }
             } else {
                 current +
                     BookmarkCollection(
+                        // Not the default millisecond id: a bulk import creates
+                        // several collections in a row — see newCollectionId.
+                        id = newCollectionId(),
                         name = collectionName,
-                        bookmarks = bookmarks,
+                        bookmarks = safeBookmarks,
                         // Without this, importing into "Favorites" would create a
                         // collection named Favorites that getFavoritesCollection()
                         // — which matches on the flag — cannot find, and that
@@ -357,6 +660,11 @@ class BookmarkManager internal constructor(
             } else {
                 current.toMutableList().also {
                     it[fromIndex] = it[fromIndex].removeBookmark(bookmarkId)
+                    // No id check needed only because bookmark ids are unique
+                    // across every collection — withDistinctIds repairs that on
+                    // load and withFreeBookmarkIds/withFreeId hold it on write.
+                    // Relax either and this call starts aliasing a bookmark in
+                    // the destination.
                     it[toIndex] = it[toIndex].addBookmark(bookmark)
                 }
             }
@@ -387,7 +695,7 @@ class BookmarkManager internal constructor(
      * Create a new bookmark collection.
      */
     fun createCollection(name: String): BookmarkCollection {
-        val collection = BookmarkCollection(name = name)
+        val collection = BookmarkCollection(id = newCollectionId(), name = name)
         mutateCollections { current -> current + collection }
         return collection
     }
@@ -426,11 +734,16 @@ class BookmarkManager internal constructor(
     /**
      * Get the "Favorites" collection.
      *
-     * Guaranteed to always exist.
+     * Normally the real one from [collections]. If none is flagged — which
+     * [loadAllData] only prevents when the load has finished — this returns a
+     * detached placeholder that is *not* in [collections] and is not persisted.
+     * Each such call mints a fresh id, so two calls in that state do not agree
+     * on one; treat the result as a display fallback, not an identity.
      */
     fun getFavoritesCollection(): BookmarkCollection {
         return _collections.value.find { it.isFavorite }
             ?: BookmarkCollection(
+                id = newCollectionId(),
                 name = BookmarkCollection.FAVORITES_NAME,
                 isFavorite = true
             )

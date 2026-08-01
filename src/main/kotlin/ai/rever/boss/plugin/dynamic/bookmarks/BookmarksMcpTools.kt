@@ -46,9 +46,26 @@ internal class BookmarksMcpToolProvider(
                     ?: return@McpToolHandler McpToolResult("Missing required argument: url", isError = true)
                 val collection = args.string("collection") ?: "Favorites"
                 val bookmark = Bookmark(
+                    // Not the default id: Bookmark.generateId() is
+                    // "bookmark-<epochMillis>", so two adds in the same
+                    // millisecond would alias each other.
+                    id = manager.newBookmarkId(),
                     tabConfig = TabConfig(type = "browser", title = title, url = url),
                     workspaceName = "",
                 )
+                // addBookmark silently no-ops on a collection that does not
+                // exist, so reporting success unconditionally made this tool lie
+                // for any explicitly-named collection that had not been created.
+                // Checked rather than switched to addBookmarks, which would
+                // create the collection — a bigger behaviour change than making
+                // the message true.
+                if (manager.collections.value.none { it.name == collection }) {
+                    return@McpToolHandler McpToolResult(
+                        "No collection named \"$collection\". " +
+                            "Existing: ${manager.collections.value.joinToString { it.name }}",
+                        isError = true,
+                    )
+                }
                 manager.addBookmark(collection, bookmark)
                 McpToolResult("Added bookmark \"$title\" to $collection.")
             },

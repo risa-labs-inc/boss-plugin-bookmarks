@@ -26,6 +26,18 @@ internal class BookmarkDataProviderImpl(
 
     // ==================== Bookmark Operations ====================
 
+    /**
+     * Note the id you supply is not guaranteed to be the id that gets stored.
+     *
+     * `Bookmark.generateId()` is millisecond-resolution, so a caller adding two
+     * bookmarks in quick succession hands us the same id twice. Rather than let
+     * that alias an existing bookmark — which would make `removeBookmark` and
+     * `updateBookmark` act on whichever matched first — the manager re-ids the
+     * newcomer. Since this returns Unit there is nothing to report it back
+     * through, so a caller that mints an id and later calls
+     * [updateBookmark]/[removeBookmark] with it may find it no longer resolves.
+     * Read the id back from [collections] instead of assuming it survived.
+     */
     override fun addBookmark(collectionName: String, bookmark: Bookmark) {
         bookmarkManager.addBookmark(collectionName, bookmark)
     }
@@ -39,6 +51,12 @@ internal class BookmarkDataProviderImpl(
      * a collection that does not exist, while this creates it. The host ensures
      * the collection before calling either way, so the two agree in practice —
      * but a direct caller should know which it is talking to.
+     *
+     * [addBookmark]'s warning about supplied ids applies here too, and this is
+     * the path where it actually bites: a bulk import hands over thousands of
+     * `Bookmark.generateId()` values, which are millisecond-resolution and so
+     * collide with each other. Expect ids to be re-assigned and read them back
+     * from [collections].
      */
     override fun addBookmarks(collectionName: String, bookmarks: List<Bookmark>) {
         bookmarkManager.addBookmarks(collectionName, bookmarks)

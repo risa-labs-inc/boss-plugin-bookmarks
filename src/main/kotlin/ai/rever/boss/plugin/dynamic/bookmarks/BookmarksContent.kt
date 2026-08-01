@@ -130,7 +130,21 @@ private fun BookmarksPanel(
     var allWorkspacesExpanded by remember { mutableStateOf(false) }
     var favoriteWorkspacesExpanded by remember { mutableStateOf(true) }
 
-    // Track expansion state for each collection and workspace
+    // Track expansion state for each collection and workspace.
+    //
+    // Collections are tracked by LazyColumn item key, workspaces by workspace id,
+    // and the asymmetry is deliberate. A collection appears once, so the item key
+    // is the better identity — should two ever share an id, keying on the id would
+    // expand and collapse them together. A workspace appears in *both* the
+    // "Favorite Workspaces" and "All Workspaces" sections, where its item keys
+    // differ (`fav-ws:` vs `ws:`); keying on the id is what keeps the two rows for
+    // one workspace expanding in sync.
+    //
+    // One axis where the item key is *not* strictly better: its disambiguation
+    // suffix is positional within the filtered list, so if a duplicate id ever did
+    // reach the panel, typing in the search box could move which row owns the
+    // "expanded" key. That only bites in the case ids are repaired to prevent, and
+    // the cost is a wrongly-expanded row rather than a crash.
     var expandedCollections by remember { mutableStateOf<Set<String>>(emptySet()) }
     var expandedWorkspaces by remember { mutableStateOf<Set<String>>(emptySet()) }
 
@@ -149,34 +163,48 @@ private fun BookmarksPanel(
     var bookmarkToCopy by remember { mutableStateOf<Pair<Bookmark, String>?>(null) }
     var bookmarkToMove by remember { mutableStateOf<Pair<Bookmark, String>?>(null) }
 
-    // Filtered data based on search query
+    // Filtered data based on search query.
+    //
+    // Each list is paired with LazyColumn item keys up front — see [keyedUniquely]
+    // for why the keys cannot be `it.id` on its own.
+    //
+    // Favorites are excluded here rather than at the call site: they render in
+    // their own section, from filteredFavorites.
     val filteredCollections = remember(collections, searchQuery) {
         filterCollections(collections, searchQuery)
+            .filter { !it.isFavorite }
+            .keyedUniquely("coll") { it.id }
     }
     val filteredFavoriteWorkspaces = remember(favoriteWorkspaces, workspaces, searchQuery) {
         val favoriteWorkspacesList = favoriteWorkspaces.mapNotNull { fav ->
             workspaces.find { it.id == fav.workspaceId }
         }
         filterWorkspaces(favoriteWorkspacesList, searchQuery) { viewModel.buildTabStructure(it) }
+            .keyedUniquely("fav-ws") { it.id }
     }
     val filteredAllWorkspaces = remember(workspaces, searchQuery) {
         filterWorkspaces(workspaces, searchQuery) { viewModel.buildTabStructure(it) }
+            .keyedUniquely("ws") { it.id }
     }
 
     // Filter favorites collection bookmarks
     val favoritesCollection = collections.find { it.isFavorite }
     val filteredFavorites = remember(favoritesCollection?.bookmarks, searchQuery) {
-        favoritesCollection?.let { filterBookmarks(it.bookmarks, searchQuery) } ?: emptyList()
+        favoritesCollection
+            ?.let { filterBookmarks(it.bookmarks, searchQuery) }
+            ?.keyedUniquely("fav") { it.id }
+            ?: emptyList()
     }
 
     // Scrollbar state
     val listState = rememberLazyListState()
 
-    fun toggleCollectionExpansion(collectionId: String) {
-        expandedCollections = if (expandedCollections.contains(collectionId)) {
-            expandedCollections - collectionId
+    // Takes a LazyColumn item key, not a collection id — see expandedCollections.
+    fun toggleCollectionExpansion(itemKey: String) {
+        expandedCollections = if (expandedCollections.contains(itemKey)) {
+            expandedCollections - itemKey
         } else {
-            expandedCollections + collectionId
+            expandedCollections + itemKey
         }
     }
 
@@ -257,7 +285,7 @@ private fun BookmarksPanel(
                             )
                         }
                     } else {
-                        items(filteredFavorites, key = { "fav-${it.id}" }) { bookmark ->
+                        items(filteredFavorites, key = { it.key }) { (_, bookmark) ->
                             BookmarkItem(
                                 bookmark = bookmark,
                                 onClick = { viewModel.onBookmarkClick(bookmark, coroutineScope) },
@@ -273,7 +301,6 @@ private fun BookmarksPanel(
             }
 
             // Collections section (all non-favorite collections)
-            val otherCollections = filteredCollections.filter { !it.isFavorite }
             item {
                 Spacer(modifier = Modifier.height(8.dp))
                 CollapsibleSection(
@@ -304,7 +331,7 @@ private fun BookmarksPanel(
             }
 
             if (collectionsExpanded) {
-                if (otherCollections.isEmpty()) {
+                if (filteredCollections.isEmpty()) {
                     item {
                         EmptyState(
                             icon = Icons.Outlined.FolderOpen,
@@ -312,11 +339,14 @@ private fun BookmarksPanel(
                         )
                     }
                 } else {
-                    items(otherCollections, key = { "coll-${it.id}" }) { collection ->
+                    items(filteredCollections, key = { it.key }) { (itemKey, collection) ->
                         CollectionItem(
                             collection = collection,
-                            isExpanded = expandedCollections.contains(collection.id),
-                            onToggleExpand = { toggleCollectionExpansion(collection.id) },
+                            // Tracked by item key, not collection id: should two
+                            // collections ever share an id, keying on it would
+                            // expand and collapse them together.
+                            isExpanded = expandedCollections.contains(itemKey),
+                            onToggleExpand = { toggleCollectionExpansion(itemKey) },
                             onBookmarkClick = { bookmark ->
                                 viewModel.onBookmarkClick(bookmark, coroutineScope)
                             },
@@ -361,7 +391,7 @@ private fun BookmarksPanel(
                         )
                     }
                 } else {
-                    items(filteredFavoriteWorkspaces, key = { "fav-ws-${it.id}" }) { workspace ->
+                    items(filteredFavoriteWorkspaces, key = { it.key }) { (_, workspace) ->
                         WorkspaceItem(
                             workspace = workspace,
                             isExpanded = expandedWorkspaces.contains(workspace.id),
@@ -428,7 +458,7 @@ private fun BookmarksPanel(
                         )
                     }
                 } else {
-                    items(filteredAllWorkspaces, key = { "ws-${it.id}" }) { workspace ->
+                    items(filteredAllWorkspaces, key = { it.key }) { (_, workspace) ->
                         WorkspaceItem(
                             workspace = workspace,
                             isExpanded = expandedWorkspaces.contains(workspace.id),
@@ -571,7 +601,7 @@ private fun BookmarksPanel(
             collections = collections.filter { !it.isFavorite && it.id != fromCollectionId },
             onDismiss = { bookmarkToCopy = null },
             onSelect = { targetCollection ->
-                viewModel.addBookmark(targetCollection.name, bookmark.copy(id = java.util.UUID.randomUUID().toString()))
+                viewModel.copyBookmark(targetCollection.name, bookmark)
                 bookmarkToCopy = null
             }
         )
@@ -797,15 +827,25 @@ private fun CollectionItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                // The whole row toggles, not just the chevron. A 16.dp icon is a
+                // small target, and clicking anywhere else — the folder icon, the
+                // name, the count — used to do nothing at all, which reads as the
+                // panel being broken rather than as "aim for the arrow".
+                //
+                // `clickable` before `padding` so the padded area is part of the
+                // target, matching BookmarkItem. The context-menu modifier on the
+                // inner row only consumes secondary presses, so a left click still
+                // reaches this handler.
+                .clickable { onToggleExpand() }
                 .padding(horizontal = 24.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = if (isExpanded) Icons.Filled.ExpandMore else Icons.Filled.ChevronRight,
                 contentDescription = if (isExpanded) "Collapse" else "Expand",
-                modifier = Modifier
-                    .size(16.dp)
-                    .clickable { onToggleExpand() },
+                // No clickable of its own: the row handles the gesture now, and a
+                // nested one would put a second ripple over the same tap.
+                modifier = Modifier.size(16.dp),
                 tint = MutedGrayText
             )
 
