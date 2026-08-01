@@ -149,24 +149,37 @@ private fun BookmarksPanel(
     var bookmarkToCopy by remember { mutableStateOf<Pair<Bookmark, String>?>(null) }
     var bookmarkToMove by remember { mutableStateOf<Pair<Bookmark, String>?>(null) }
 
-    // Filtered data based on search query
+    // Filtered data based on search query.
+    //
+    // Each list is paired with LazyColumn item keys up front — see [keyedUniquely]
+    // for why the keys cannot be `it.id` on its own.
+    //
+    // Favorites are excluded here rather than at the call site: they render in
+    // their own section, from filteredFavorites.
     val filteredCollections = remember(collections, searchQuery) {
         filterCollections(collections, searchQuery)
+            .filter { !it.isFavorite }
+            .keyedUniquely("coll") { it.id }
     }
     val filteredFavoriteWorkspaces = remember(favoriteWorkspaces, workspaces, searchQuery) {
         val favoriteWorkspacesList = favoriteWorkspaces.mapNotNull { fav ->
             workspaces.find { it.id == fav.workspaceId }
         }
         filterWorkspaces(favoriteWorkspacesList, searchQuery) { viewModel.buildTabStructure(it) }
+            .keyedUniquely("fav-ws") { it.id }
     }
     val filteredAllWorkspaces = remember(workspaces, searchQuery) {
         filterWorkspaces(workspaces, searchQuery) { viewModel.buildTabStructure(it) }
+            .keyedUniquely("ws") { it.id }
     }
 
     // Filter favorites collection bookmarks
     val favoritesCollection = collections.find { it.isFavorite }
     val filteredFavorites = remember(favoritesCollection?.bookmarks, searchQuery) {
-        favoritesCollection?.let { filterBookmarks(it.bookmarks, searchQuery) } ?: emptyList()
+        favoritesCollection
+            ?.let { filterBookmarks(it.bookmarks, searchQuery) }
+            ?.keyedUniquely("fav") { it.id }
+            ?: emptyList()
     }
 
     // Scrollbar state
@@ -257,7 +270,7 @@ private fun BookmarksPanel(
                             )
                         }
                     } else {
-                        items(filteredFavorites, key = { "fav-${it.id}" }) { bookmark ->
+                        items(filteredFavorites, key = { it.key }) { (_, bookmark) ->
                             BookmarkItem(
                                 bookmark = bookmark,
                                 onClick = { viewModel.onBookmarkClick(bookmark, coroutineScope) },
@@ -273,7 +286,6 @@ private fun BookmarksPanel(
             }
 
             // Collections section (all non-favorite collections)
-            val otherCollections = filteredCollections.filter { !it.isFavorite }
             item {
                 Spacer(modifier = Modifier.height(8.dp))
                 CollapsibleSection(
@@ -304,7 +316,7 @@ private fun BookmarksPanel(
             }
 
             if (collectionsExpanded) {
-                if (otherCollections.isEmpty()) {
+                if (filteredCollections.isEmpty()) {
                     item {
                         EmptyState(
                             icon = Icons.Outlined.FolderOpen,
@@ -312,11 +324,14 @@ private fun BookmarksPanel(
                         )
                     }
                 } else {
-                    items(otherCollections, key = { "coll-${it.id}" }) { collection ->
+                    items(filteredCollections, key = { it.key }) { (itemKey, collection) ->
                         CollectionItem(
                             collection = collection,
-                            isExpanded = expandedCollections.contains(collection.id),
-                            onToggleExpand = { toggleCollectionExpansion(collection.id) },
+                            // Tracked by item key, not collection id: should two
+                            // collections ever share an id, keying on it would
+                            // expand and collapse them together.
+                            isExpanded = expandedCollections.contains(itemKey),
+                            onToggleExpand = { toggleCollectionExpansion(itemKey) },
                             onBookmarkClick = { bookmark ->
                                 viewModel.onBookmarkClick(bookmark, coroutineScope)
                             },
@@ -361,7 +376,7 @@ private fun BookmarksPanel(
                         )
                     }
                 } else {
-                    items(filteredFavoriteWorkspaces, key = { "fav-ws-${it.id}" }) { workspace ->
+                    items(filteredFavoriteWorkspaces, key = { it.key }) { (_, workspace) ->
                         WorkspaceItem(
                             workspace = workspace,
                             isExpanded = expandedWorkspaces.contains(workspace.id),
@@ -428,7 +443,7 @@ private fun BookmarksPanel(
                         )
                     }
                 } else {
-                    items(filteredAllWorkspaces, key = { "ws-${it.id}" }) { workspace ->
+                    items(filteredAllWorkspaces, key = { it.key }) { (_, workspace) ->
                         WorkspaceItem(
                             workspace = workspace,
                             isExpanded = expandedWorkspaces.contains(workspace.id),
@@ -1674,6 +1689,41 @@ private fun CollectionSelectionDialog(
         backgroundColor = DarkBackground,
         shape = RoundedCornerShape(8.dp)
     )
+}
+
+// ==================== LazyColumn Keys ====================
+
+/** An element paired with the LazyColumn item key it is rendered under. */
+private data class Keyed<T>(val key: String, val value: T)
+
+/**
+ * Pair each element with a `"<prefix>-<id>"` item key, made unique within the
+ * list by suffixing repeats.
+ *
+ * A LazyColumn key must be unique. Two items sharing one key share a single
+ * subcomposition slot — and therefore a single LayoutNode — so the list measures
+ * that one node twice in a pass and Compose throws `IllegalStateException:
+ * layout state is not idle before measure starts`. Collapsed rows are the same
+ * height and can hide it; expanding one of the pair changes its size and
+ * triggers the second measure.
+ *
+ * Ids are supposed to be unique and [BookmarkManager.withDistinctIds] repairs
+ * them on load, so in practice nothing is suffixed here. This is the backstop
+ * that keeps *any* duplicate — a hand-edited file, a future host path that
+ * inserts collections directly — from taking the whole panel down.
+ */
+private fun <T> List<T>.keyedUniquely(prefix: String, id: (T) -> String): List<Keyed<T>> {
+    val seen = HashSet<String>()
+    return map { item ->
+        val base = "$prefix-${id(item)}"
+        var key = base
+        var suffix = 2
+        while (!seen.add(key)) {
+            key = "$base#$suffix"
+            suffix++
+        }
+        Keyed(key, item)
+    }
 }
 
 // ==================== Filtering Functions ====================

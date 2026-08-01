@@ -83,13 +83,19 @@ class BookmarkManager internal constructor(
         scope.launch {
             try {
                 // Load collections
-                val loaded = fileManager.loadCollections()
+                val onDisk = fileManager.loadCollections()
+
+                // Repair id collisions before anything keys off an id. Files
+                // written by older versions can hold two collections under one
+                // id — see withDistinctIds.
+                val loaded = withDistinctIds(onDisk)
 
                 // Ensure "Favorites" collection exists
                 val withFavorites =
                     if (loaded.none { it.name == BookmarkCollection.FAVORITES_NAME }) {
                         listOf(
                             BookmarkCollection(
+                                id = newCollectionId(),
                                 name = BookmarkCollection.FAVORITES_NAME,
                                 isFavorite = true
                             )
@@ -117,7 +123,11 @@ class BookmarkManager internal constructor(
                 // in-memory value: _collections starts empty, so `!= before` was
                 // unconditionally true and every launch rewrote the file — an
                 // iCloud sync upload per start for no state change.
-                if (_collections.value != loaded) {
+                //
+                // `onDisk` rather than the post-repair `loaded`, or an id
+                // collision that withDistinctIds just fixed would live only in
+                // memory and come back on the next launch.
+                if (_collections.value != onDisk) {
                     saveCollectionsToFile()
                 }
 
@@ -148,6 +158,7 @@ class BookmarkManager internal constructor(
                     } else {
                         listOf(
                             BookmarkCollection(
+                                id = newCollectionId(),
                                 name = BookmarkCollection.FAVORITES_NAME,
                                 isFavorite = true
                             )
@@ -156,6 +167,86 @@ class BookmarkManager internal constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Mint a collection id that cannot collide with one minted a moment ago.
+     *
+     * [BookmarkCollection.generateId] is `"collection-<epochMillis>"`, so two
+     * collections created inside the same millisecond get the *same* id — which
+     * a browser import does routinely, creating "Bookmarks Bar" and "Other
+     * Bookmarks" back to back through [createCollection].
+     *
+     * That is not a cosmetic clash. Collection ids are the identity every
+     * operation keys off: [renameCollection] and [deleteCollection] hit
+     * whichever collides first, [mergeLoadedWithPending] keys a map by id and so
+     * silently drops one of the pair, and the panel uses the id as a LazyColumn
+     * item key — where a duplicate makes two items share one subcomposition
+     * slot and crashes Compose with "layout state is not idle before measure
+     * starts" as soon as one of them is expanded.
+     */
+    private fun newCollectionId(): String =
+        "collection-${System.currentTimeMillis()}-${java.util.UUID.randomUUID().toString().take(8)}"
+
+    /**
+     * Return [collections] with every collection id, and every bookmark id,
+     * distinct — repairing what older versions already wrote to disk.
+     *
+     * Colliding ids are not hypothetical: see [newCollectionId] for how
+     * millisecond-resolution ids collide, and note that `Bookmark.generateId()`
+     * has the same shape. This runs on load so a file written before the fix
+     * stops crashing the panel, rather than only new files being safe.
+     *
+     * The first holder of an id keeps it and later ones are renumbered, so the
+     * repair touches as little as possible and is idempotent: the ids it hands
+     * out are themselves unused, so a second load is a no-op and does not
+     * rewrite the file.
+     *
+     * Bookmark ids are made unique across *all* collections, not just within
+     * one. The search provider publishes `bookmark.id` as the result id, and
+     * [findBookmarkForTab] returns an id pair that callers resolve globally.
+     */
+    internal fun withDistinctIds(collections: List<BookmarkCollection>): List<BookmarkCollection> {
+        val usedCollectionIds = HashSet<String>()
+        val usedBookmarkIds = HashSet<String>()
+
+        return collections.map { collection ->
+            val collectionId = distinctId(collection.id, usedCollectionIds)
+
+            var bookmarksChanged = false
+            val bookmarks =
+                collection.bookmarks.map { bookmark ->
+                    val bookmarkId = distinctId(bookmark.id, usedBookmarkIds)
+                    if (bookmarkId == bookmark.id) {
+                        bookmark
+                    } else {
+                        bookmarksChanged = true
+                        bookmark.copy(id = bookmarkId)
+                    }
+                }
+
+            when {
+                collectionId != collection.id ->
+                    collection.copy(id = collectionId, bookmarks = bookmarks)
+                bookmarksChanged -> collection.copy(bookmarks = bookmarks)
+                // Untouched collections are returned as-is so an unaffected file
+                // compares equal to what was loaded and no save is scheduled.
+                else -> collection
+            }
+        }
+    }
+
+    /**
+     * Claim [id] in [used], or the first `id-2`, `id-3`, … that is still free.
+     *
+     * The suffixed candidate is checked against [used] too: a file can already
+     * contain the very id a naive `"$id-2"` would hand out.
+     */
+    private fun distinctId(id: String, used: MutableSet<String>): String {
+        if (used.add(id)) return id
+        var suffix = 2
+        while (!used.add("$id-$suffix")) suffix++
+        return "$id-$suffix"
     }
 
     /**
@@ -271,6 +362,9 @@ class BookmarkManager internal constructor(
             } else {
                 current +
                     BookmarkCollection(
+                        // Not the default millisecond id: a bulk import creates
+                        // several collections in a row — see newCollectionId.
+                        id = newCollectionId(),
                         name = collectionName,
                         bookmarks = bookmarks,
                         // Without this, importing into "Favorites" would create a
@@ -387,7 +481,7 @@ class BookmarkManager internal constructor(
      * Create a new bookmark collection.
      */
     fun createCollection(name: String): BookmarkCollection {
-        val collection = BookmarkCollection(name = name)
+        val collection = BookmarkCollection(id = newCollectionId(), name = name)
         mutateCollections { current -> current + collection }
         return collection
     }
@@ -431,6 +525,7 @@ class BookmarkManager internal constructor(
     fun getFavoritesCollection(): BookmarkCollection {
         return _collections.value.find { it.isFavorite }
             ?: BookmarkCollection(
+                id = newCollectionId(),
                 name = BookmarkCollection.FAVORITES_NAME,
                 isFavorite = true
             )
