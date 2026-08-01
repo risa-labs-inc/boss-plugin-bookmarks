@@ -827,15 +827,25 @@ private fun CollectionItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                // The whole row toggles, not just the chevron. A 16.dp icon is a
+                // small target, and clicking anywhere else — the folder icon, the
+                // name, the count — used to do nothing at all, which reads as the
+                // panel being broken rather than as "aim for the arrow".
+                //
+                // `clickable` before `padding` so the padded area is part of the
+                // target, matching BookmarkItem. The context-menu modifier on the
+                // inner row only consumes secondary presses, so a left click still
+                // reaches this handler.
+                .clickable { onToggleExpand() }
                 .padding(horizontal = 24.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = if (isExpanded) Icons.Filled.ExpandMore else Icons.Filled.ChevronRight,
                 contentDescription = if (isExpanded) "Collapse" else "Expand",
-                modifier = Modifier
-                    .size(16.dp)
-                    .clickable { onToggleExpand() },
+                // No clickable of its own: the row handles the gesture now, and a
+                // nested one would put a second ripple over the same tap.
+                modifier = Modifier.size(16.dp),
                 tint = MutedGrayText
             )
 
