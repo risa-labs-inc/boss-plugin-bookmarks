@@ -373,6 +373,89 @@ class BookmarkManagerIdTest {
         }
     }
 
+    /** Holds the initial load open so a test can mutate inside the load window. */
+    private class GatedFileManager(
+        directory: String,
+        private val gate: java.util.concurrent.CountDownLatch,
+    ) : BookmarkFileManager(directory) {
+        override suspend fun loadCollections(): List<BookmarkCollection> {
+            gate.await()
+            return super.loadCollections()
+        }
+    }
+
+    @Test
+    fun `two same-named collections created during the load window both survive`() {
+        // mergeLoadedWithPending's name fallback exists to match a pending
+        // collection against one the *disk* knows under a different id. It used
+        // to match pendings against each other too, because they were folded into
+        // the same map as it went — so the second collapsed onto the first and
+        // vanished. Gated rather than timed: this raced the async load, which is
+        // why it surfaced as an intermittent CI failure rather than a bug report.
+        val dir = Files.createTempDirectory("bookmark-manager-id-test-window").toFile()
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val gated = BookmarkManager(GatedFileManager(dir.absolutePath, gate))
+        try {
+            val first = gated.createCollection("Twin")
+            val second = gated.createCollection("Twin")
+            assertNotEquals(first.id, second.id, "createCollection minted a duplicate id")
+            // Same shape as BookmarkManagerBulkTest's duplicate-name test, which
+            // is what caught this: it raced the load and failed on CI only.
+            gated.addBookmarks("Twin", listOf(bookmark("b1")))
+
+            gate.countDown()
+            awaitThat("the load to merge") {
+                gated.collections.value.any { it.name == BookmarkCollection.FAVORITES_NAME }
+            }
+
+            val twins = gated.collections.value.filter { it.name == "Twin" }
+            assertEquals(2, twins.size, "a collection created during the load window was lost")
+            assertEquals(
+                setOf(first.id, second.id),
+                twins.map { it.id }.toSet(),
+                "both collections must keep their own identity",
+            )
+            assertEquals(1, twins.first().bookmarks.size, "the add did not land in the first match")
+            assertEquals(0, twins.last().bookmarks.size, "the add leaked into the second collection")
+        } finally {
+            runBlocking { runCatching { gated.close() } }
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a pending collection still merges into the disk copy under a different id`() {
+        // The behaviour the name fallback exists for, which the fix must not
+        // break: same name, different id, one collection out — with both sides'
+        // bookmarks unioned.
+        val dir = Files.createTempDirectory("bookmark-manager-id-test-rename").toFile()
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val files = BookmarkFileManager(dir.absolutePath)
+        runBlocking {
+            files.saveCollections(listOf(collection("on-disk-id", "Work", listOf(bookmark("disk-1")))))
+        }
+
+        val gated = BookmarkManager(GatedFileManager(dir.absolutePath, gate))
+        try {
+            gated.addBookmarks("Work", listOf(bookmark("pending-1")))
+            gate.countDown()
+            awaitThat("the load to merge") {
+                gated.collections.value.any { it.name == BookmarkCollection.FAVORITES_NAME }
+            }
+
+            val work = gated.collections.value.filter { it.name == "Work" }
+            assertEquals(1, work.size, "the pending collection did not merge into the disk copy")
+            assertEquals(
+                setOf("disk-1", "pending-1"),
+                work.single().bookmarks.map { it.id }.toSet(),
+                "the union of both sides' bookmarks must survive",
+            )
+        } finally {
+            runBlocking { runCatching { gated.close() } }
+            dir.deleteRecursively()
+        }
+    }
+
     /** Counts writes, so "no save happened" is an exact assertion and not a timing one. */
     private class SaveCountingFileManager(directory: String) : BookmarkFileManager(directory) {
         val collectionSaves = java.util.concurrent.atomic.AtomicInteger(0)

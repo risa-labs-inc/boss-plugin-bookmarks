@@ -468,11 +468,28 @@ class BookmarkManager internal constructor(
         val merged = LinkedHashMap<String, BookmarkCollection>()
         loaded.forEach { merged[it.id] = it }
 
+        // Snapshotted before any pending is folded in, and each entry is claimed
+        // at most once. The name fallback below is for "a pending collection the
+        // loaded set knows under a different id" — it must only ever match
+        // something that came from disk.
+        //
+        // Without this it also matched pendings already added to `merged`, so two
+        // same-named collections created during the load window collapsed into
+        // one and the second silently replaced the first. That is reachable: two
+        // createCollection("Twin") calls, or a browser import creating two
+        // like-named folders, while the initial load is still in flight.
+        // Claim-once matters for the same reason — otherwise two pendings both
+        // match the one loaded collection of that name and collapse anyway.
+        val unclaimedFromDisk = HashSet(merged.keys)
+
         pending.forEach { p ->
-            val match = merged[p.id] ?: merged.values.firstOrNull { it.name == p.name }
+            val match =
+                merged[p.id]
+                    ?: merged.values.firstOrNull { it.id in unclaimedFromDisk && it.name == p.name }
             if (match == null) {
                 merged[p.id] = p
             } else {
+                unclaimedFromDisk.remove(match.id)
                 // Pending wins on conflict. It is the newer state: an edit, a
                 // rename or a removal made during the window would otherwise be
                 // reverted by the disk copy — and then written back. Bookmarks
