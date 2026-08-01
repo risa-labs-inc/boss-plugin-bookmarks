@@ -210,6 +210,31 @@ class BookmarkManager internal constructor(
      * Returns [incoming] itself when nothing collides, so the common path adds no
      * copy and an unchanged list still compares equal.
      */
+    /**
+     * Single-bookmark form of [withFreeBookmarkIds], without the set.
+     *
+     * Returns [bookmark] itself when its id is free, so the ordinary add path
+     * allocates nothing. Kept separate rather than folded in because the batch
+     * form needs a set to catch ids repeated *within* the batch, and one add
+     * cannot repeat itself.
+     */
+    private fun withFreeId(
+        bookmark: Bookmark,
+        current: List<BookmarkCollection>,
+    ): Bookmark {
+        fun taken(id: String) = current.any { c -> c.bookmarks.any { it.id == id } }
+        if (!taken(bookmark.id)) return bookmark
+
+        var fresh = newBookmarkId()
+        while (taken(fresh)) fresh = newBookmarkId()
+        logger.warn(
+            LogCategory.UI,
+            "Re-assigned a bookmark id that was already in use",
+            mapOf("suppliedId" to bookmark.id, "assignedId" to fresh),
+        )
+        return bookmark.copy(id = fresh)
+    }
+
     private fun withFreeBookmarkIds(
         incoming: List<Bookmark>,
         current: List<BookmarkCollection>,
@@ -258,7 +283,12 @@ class BookmarkManager internal constructor(
             //
             // May repeat if mutateCollections' transform re-runs on CAS
             // contention; that is rare and a duplicate info line is harmless.
-            logger.info(
+            // warn, not info: the KDoc on BookmarkDataProviderImpl.addBookmark is
+            // explicit that a host has no other way to see this, and that a later
+            // remove/update with the supplied id will quietly fail to resolve.
+            // Someone debugging "my delete did nothing" is far likelier to have
+            // warn enabled than info.
+            logger.warn(
                 LogCategory.UI,
                 "Re-assigned bookmark ids that were already in use",
                 mapOf("count" to reIded.toString(), "batchSize" to incoming.size.toString()),
@@ -469,7 +499,11 @@ class BookmarkManager internal constructor(
             if (index < 0) {
                 current
             } else {
-                val safe = withFreeBookmarkIds(listOf(bookmark), current).first()
+                // Deliberately not withFreeBookmarkIds: that builds a HashSet over
+                // every bookmark in the store, and this is the "user clicked the
+                // star" path, re-run on every CAS retry. Scanning for one id costs
+                // the same O(library) walk without the allocation.
+                val safe = withFreeId(bookmark, current)
                 current.toMutableList().also { it[index] = it[index].addBookmark(safe) }
             }
         }
@@ -609,6 +643,11 @@ class BookmarkManager internal constructor(
             } else {
                 current.toMutableList().also {
                     it[fromIndex] = it[fromIndex].removeBookmark(bookmarkId)
+                    // No id check needed only because bookmark ids are unique
+                    // across every collection — withDistinctIds repairs that on
+                    // load and withFreeBookmarkIds/withFreeId hold it on write.
+                    // Relax either and this call starts aliasing a bookmark in
+                    // the destination.
                     it[toIndex] = it[toIndex].addBookmark(bookmark)
                 }
             }
@@ -678,7 +717,11 @@ class BookmarkManager internal constructor(
     /**
      * Get the "Favorites" collection.
      *
-     * Guaranteed to always exist.
+     * Normally the real one from [collections]. If none is flagged — which
+     * [loadAllData] only prevents when the load has finished — this returns a
+     * detached placeholder that is *not* in [collections] and is not persisted.
+     * Each such call mints a fresh id, so two calls in that state do not agree
+     * on one; treat the result as a display fallback, not an identity.
      */
     fun getFavoritesCollection(): BookmarkCollection {
         return _collections.value.find { it.isFavorite }

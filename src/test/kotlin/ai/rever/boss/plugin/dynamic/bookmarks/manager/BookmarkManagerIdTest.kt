@@ -237,6 +237,31 @@ class BookmarkManagerIdTest {
     }
 
     @Test
+    fun `a batch of already-unique ids is stored verbatim, same instances`() {
+        // The positive half of the provider-API caveat: ids are only touched when
+        // they have to be. The identity check also pins withFreeBookmarkIds
+        // returning `incoming` itself, which is what makes the no-allocation
+        // claim in its KDoc true.
+        val batch = listOf(bookmark("u1"), bookmark("u2"), bookmark("u3"))
+        manager.addBookmarks("Work", batch)
+
+        val stored = manager.collections.value.first { it.name == "Work" }.bookmarks
+        assertEquals(listOf("u1", "u2", "u3"), stored.map { it.id }, "a unique id was rewritten")
+        batch.indices.forEach { assertSame(batch[it], stored[it], "the batch was copied needlessly") }
+    }
+
+    @Test
+    fun `a single add with a free id keeps that id and the same instance`() {
+        manager.addBookmarks("Work", listOf(bookmark("existing")))
+        val newcomer = bookmark("brand-new")
+
+        manager.addBookmark("Work", newcomer)
+
+        val stored = manager.collections.value.first { it.name == "Work" }.bookmarks
+        assertSame(newcomer, stored.first { it.id == "brand-new" }, "a free id was rewritten")
+    }
+
+    @Test
     fun `adding to a collection that does not exist changes nothing`() {
         // The `index < 0` early return, which now also skips the re-id.
         manager.addBookmarks("Work", listOf(bookmark("b1")))
