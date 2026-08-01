@@ -188,6 +188,48 @@ class BookmarkManager internal constructor(
     private fun newCollectionId(): String =
         "collection-${System.currentTimeMillis()}-${java.util.UUID.randomUUID().toString().take(8)}"
 
+    /** As [newCollectionId], for bookmarks: `Bookmark.generateId()` is also millisecond-only. */
+    internal fun newBookmarkId(): String =
+        "bookmark-${System.currentTimeMillis()}-${java.util.UUID.randomUUID().toString().take(8)}"
+
+    /**
+     * Re-id any of [incoming] whose id is already taken in [current], or repeated
+     * inside the batch itself.
+     *
+     * Uniqueness has to hold at the point bookmarks are written, not only when
+     * they are read back: callers hand us `Bookmark`s carrying the default
+     * millisecond `Bookmark.generateId()`, and a browser import adds thousands in
+     * a tight loop. Repairing on load alone would leave those duplicates live in
+     * memory and on disk until the next launch — a window in which
+     * [removeBookmark], [updateBookmark] and [moveBookmark] all resolve by id and
+     * act on whichever matches first, the search provider publishes a duplicate
+     * result id, and [mergeLoadedWithPending]'s `distinctBy { it.id }` drops one
+     * of a colliding pair.
+     *
+     * Returns [incoming] itself when nothing collides, so the common path adds no
+     * copy and an unchanged list still compares equal.
+     */
+    private fun withFreeBookmarkIds(
+        incoming: List<Bookmark>,
+        current: List<BookmarkCollection>,
+    ): List<Bookmark> {
+        val taken = HashSet<String>()
+        current.forEach { collection -> collection.bookmarks.forEach { taken.add(it.id) } }
+
+        var changed = false
+        val result =
+            incoming.map { bookmark ->
+                if (taken.add(bookmark.id)) {
+                    bookmark
+                } else {
+                    changed = true
+                    // Random-suffixed, so this cannot collide in turn.
+                    bookmark.copy(id = newBookmarkId().also { taken.add(it) })
+                }
+            }
+        return if (changed) result else incoming
+    }
+
     /**
      * Return [collections] with every collection id, and every bookmark id,
      * distinct — repairing what older versions already wrote to disk.
@@ -207,16 +249,16 @@ class BookmarkManager internal constructor(
      * [findBookmarkForTab] returns an id pair that callers resolve globally.
      */
     internal fun withDistinctIds(collections: List<BookmarkCollection>): List<BookmarkCollection> {
-        val usedCollectionIds = HashSet<String>()
-        val usedBookmarkIds = HashSet<String>()
+        val collectionIds = IdAllocator(collections.map { it.id })
+        val bookmarkIds = IdAllocator(collections.flatMap { c -> c.bookmarks.map { it.id } })
 
         return collections.map { collection ->
-            val collectionId = distinctId(collection.id, usedCollectionIds)
+            val collectionId = collectionIds.claim(collection.id)
 
             var bookmarksChanged = false
             val bookmarks =
                 collection.bookmarks.map { bookmark ->
-                    val bookmarkId = distinctId(bookmark.id, usedBookmarkIds)
+                    val bookmarkId = bookmarkIds.claim(bookmark.id)
                     if (bookmarkId == bookmark.id) {
                         bookmark
                     } else {
@@ -237,16 +279,44 @@ class BookmarkManager internal constructor(
     }
 
     /**
-     * Claim [id] in [used], or the first `id-2`, `id-3`, … that is still free.
+     * Hands out ids that are distinct from each other *and* from every id the
+     * input already held.
      *
-     * The suffixed candidate is checked against [used] too: a file can already
-     * contain the very id a naive `"$id-2"` would hand out.
+     * Reserving the whole input up front is what keeps "the first holder of an
+     * id keeps it" true. Probing only against the ids seen so far displaces a
+     * legitimate later owner: for `["c", "c", "c-2"]` the duplicate `c` would
+     * take `c-2`, and the third collection — which owns `c-2` on disk — would be
+     * pushed to `c-2-2`. Reserved, it becomes `["c", "c-3", "c-2"]`, and a
+     * second pass over that is a no-op.
      */
-    private fun distinctId(id: String, used: MutableSet<String>): String {
-        if (used.add(id)) return id
-        var suffix = 2
-        while (!used.add("$id-$suffix")) suffix++
-        return "$id-$suffix"
+    private class IdAllocator(existing: Collection<String>) {
+        /** Every id the input held, so renumbering never displaces its owner. */
+        private val reserved = existing.toHashSet()
+        private val used = HashSet<String>(existing.size)
+
+        /**
+         * Where to resume probing per base id.
+         *
+         * Without it each duplicate restarts at 2 and re-walks the suffixes
+         * already handed out — quadratic in the size of a collided group, on the
+         * startup path, for exactly the large-import files this repair targets.
+         */
+        private val nextSuffix = HashMap<String, Int>()
+
+        fun claim(id: String): String {
+            if (used.add(id)) return id
+
+            var suffix = nextSuffix[id] ?: 2
+            var candidate = "$id-$suffix"
+            // `in reserved` is checked first and short-circuits, so a candidate
+            // belonging to a later owner is skipped without being consumed.
+            while (candidate in reserved || !used.add(candidate)) {
+                suffix++
+                candidate = "$id-$suffix"
+            }
+            nextSuffix[id] = suffix + 1
+            return candidate
+        }
     }
 
     /**
@@ -326,7 +396,8 @@ class BookmarkManager internal constructor(
             if (index < 0) {
                 current
             } else {
-                current.toMutableList().also { it[index] = it[index].addBookmark(bookmark) }
+                val safe = withFreeBookmarkIds(listOf(bookmark), current).first()
+                current.toMutableList().also { it[index] = it[index].addBookmark(safe) }
             }
         }
     }
@@ -348,6 +419,11 @@ class BookmarkManager internal constructor(
             // so resolve by name first or an import into an existing folder would
             // leave a duplicate empty collection behind.
             val index = current.indexOfFirst { it.name == collectionName }
+
+            // This is the import path, so it is where millisecond-resolution
+            // caller ids collide in bulk — see withFreeBookmarkIds.
+            @Suppress("NAME_SHADOWING")
+            val bookmarks = withFreeBookmarkIds(bookmarks, current)
 
             if (index >= 0) {
                 // One append of the whole batch, not a fold of per-item copies.

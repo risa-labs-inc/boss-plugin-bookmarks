@@ -1697,8 +1697,8 @@ private fun CollectionSelectionDialog(
 private data class Keyed<T>(val key: String, val value: T)
 
 /**
- * Pair each element with a `"<prefix>-<id>"` item key, made unique within the
- * list by suffixing repeats.
+ * Pair each element with an item key that is unique within the list, suffixing
+ * repeats.
  *
  * A LazyColumn key must be unique. Two items sharing one key share a single
  * subcomposition slot — and therefore a single LayoutNode — so the list measures
@@ -1711,16 +1711,25 @@ private data class Keyed<T>(val key: String, val value: T)
  * them on load, so in practice nothing is suffixed here. This is the backstop
  * that keeps *any* duplicate — a hand-edited file, a future host path that
  * inserts collections directly — from taking the whole panel down.
+ *
+ * The id is length-delimited rather than just concatenated after [section].
+ * Every section is an item in one shared LazyColumn, and plain concatenation is
+ * ambiguous across them: section `fav` with a bookmark id of `ws-1` would
+ * produce the same key as section `fav-ws` with a workspace id of `1`. No
+ * section literal contains `:`, so the first two fields always parse back
+ * unambiguously — and unlike escaping, this cannot be defeated by an id
+ * containing the delimiter.
  */
-private fun <T> List<T>.keyedUniquely(prefix: String, id: (T) -> String): List<Keyed<T>> {
+private fun <T> List<T>.keyedUniquely(section: String, id: (T) -> String): List<Keyed<T>> {
     val seen = HashSet<String>()
     return map { item ->
-        val base = "$prefix-${id(item)}"
+        val rawId = id(item)
+        val base = "$section:${rawId.length}:$rawId"
         var key = base
-        var suffix = 2
+        var repeat = 2
         while (!seen.add(key)) {
-            key = "$base#$suffix"
-            suffix++
+            key = "$base#$repeat"
+            repeat++
         }
         Keyed(key, item)
     }

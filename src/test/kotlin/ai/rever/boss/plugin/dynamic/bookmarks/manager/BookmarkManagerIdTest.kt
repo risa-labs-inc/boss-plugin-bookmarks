@@ -24,8 +24,10 @@ import kotlin.test.assertTrue
  * LayoutNode, and expanding one of them crashed Compose with
  * `IllegalStateException: layout state is not idle before measure starts`.
  *
- * Two properties are needed: newly minted ids never collide, and ids that older
- * versions already wrote to disk get repaired on load.
+ * Three properties are needed: ids this plugin mints never collide, ids handed
+ * to us by a caller are made unique as they are written, and ids that older
+ * versions already wrote to disk get repaired on load — without rewriting a file
+ * that was already fine.
  */
 class BookmarkManagerIdTest {
     private lateinit var tempDir: File
@@ -65,7 +67,7 @@ class BookmarkManagerIdTest {
         val created = (0 until 50).map { manager.createCollection("Collection $it") }
 
         val ids = created.map { it.id }
-        assertEquals(ids.size, ids.toSet().size, "createCollection minted a duplicate id")
+        assertEquals(ids.toSet().size, ids.size, "createCollection minted a duplicate id")
     }
 
     @Test
@@ -74,7 +76,7 @@ class BookmarkManagerIdTest {
         manager.addBookmarks("Other Bookmarks", listOf(bookmark("b2")))
 
         val ids = manager.collections.value.map { it.id }
-        assertEquals(ids.size, ids.toSet().size, "addBookmarks minted a duplicate collection id")
+        assertEquals(ids.toSet().size, ids.size, "addBookmarks minted a duplicate collection id")
     }
 
     @Test
@@ -127,6 +129,80 @@ class BookmarkManagerIdTest {
             )
 
         assertEquals(listOf("c", "c-2", "c-3"), repaired.map { it.id })
+    }
+
+    @Test
+    fun `a pre-existing owner appearing after the duplicate keeps its id`() {
+        // The ordering the probe-as-you-go version got wrong: it handed "c-2" to
+        // the duplicate and pushed the real owner to "c-2-2".
+        val repaired =
+            manager.withDistinctIds(
+                listOf(
+                    collection("c", "First"),
+                    collection("c", "Duplicate"),
+                    collection("c-2", "Owns c-2 on disk"),
+                ),
+            )
+
+        assertEquals(listOf("c", "c-3", "c-2"), repaired.map { it.id })
+        assertEquals(
+            listOf("First", "Duplicate", "Owns c-2 on disk"),
+            repaired.map { it.name },
+            "renumbering must not reorder",
+        )
+
+        // And still idempotent from that state.
+        assertEquals(repaired, manager.withDistinctIds(repaired))
+    }
+
+    @Test
+    fun `renumbering a collection id leaves its bookmarks untouched`() {
+        val bookmarks = listOf(bookmark("b1"), bookmark("b2"), bookmark("b3"))
+        val repaired =
+            manager.withDistinctIds(
+                listOf(
+                    collection("c", "First"),
+                    collection("c", "Renumbered", bookmarks),
+                ),
+            )
+
+        val renumbered = repaired[1]
+        assertNotEquals("c", renumbered.id, "expected this collection to be renumbered")
+        assertEquals(bookmarks, renumbered.bookmarks, "bookmark order or content changed")
+    }
+
+    @Test
+    fun `a bulk add re-ids bookmarks that would collide with each other`() {
+        // What the host hands us on an import: every Bookmark carrying the
+        // default millisecond id, so the whole batch aliases.
+        val colliding = (0 until 20).map { bookmark("bookmark-same", title = "Site $it") }
+        manager.addBookmarks("Bookmarks Bar", colliding)
+
+        val stored = manager.collections.value.first { it.name == "Bookmarks Bar" }.bookmarks
+        assertEquals(colliding.size, stored.size, "a bookmark was dropped")
+        assertEquals(
+            stored.size,
+            stored.map { it.id }.toSet().size,
+            "duplicate bookmark ids reached the collection",
+        )
+        // Re-iding must not lose what the bookmark actually is.
+        assertEquals(
+            colliding.map { it.tabConfig.title },
+            stored.map { it.tabConfig.title },
+            "re-iding reordered or altered the batch",
+        )
+    }
+
+    @Test
+    fun `adding a bookmark whose id is already taken re-ids the newcomer`() {
+        manager.addBookmarks("Work", listOf(bookmark("bookmark-same", title = "Original")))
+        manager.addBookmark("Work", bookmark("bookmark-same", title = "Newcomer"))
+
+        val stored = manager.collections.value.first { it.name == "Work" }.bookmarks
+        assertEquals(2, stored.size)
+        assertEquals(2, stored.map { it.id }.toSet().size, "the newcomer aliased the original")
+        // The existing bookmark keeps its id; the newcomer is the one moved.
+        assertEquals("bookmark-same", stored.first { it.tabConfig.title == "Original" }.id)
     }
 
     @Test
@@ -200,6 +276,40 @@ class BookmarkManagerIdTest {
                 onDisk.first { it.name == "Bookmarks Bar" }.id,
                 onDisk.first { it.name == "Other Bookmarks" }.id,
             )
+        } finally {
+            runBlocking { runCatching { reloaded.close() } }
+            seedDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `loading a file that needs no repair does not rewrite it`() {
+        // The other side of the `_collections.value != onDisk` branch: the
+        // assertSame test pins the helper, this pins the decision that uses it.
+        // Favorites is seeded by name, or loadAllData would add it and save.
+        val seedDir = Files.createTempDirectory("bookmark-manager-id-test-clean").toFile()
+        val seedFiles = BookmarkFileManager(seedDir.absolutePath)
+        runBlocking {
+            seedFiles.saveCollections(
+                listOf(
+                    collection("collection-favs", BookmarkCollection.FAVORITES_NAME, listOf(bookmark("b1"))),
+                    collection("collection-work", "Work", listOf(bookmark("b2"))),
+                ),
+            )
+        }
+
+        val file = File(seedDir, BookmarkFileManager.COLLECTIONS_FILE)
+        val before = file.readText()
+        val modifiedBefore = file.lastModified()
+
+        val reloaded = BookmarkManager(seedFiles)
+        try {
+            // No condition to await — we are asserting a *non*-event, so give the
+            // load and any save it might schedule time to land.
+            Thread.sleep(750)
+
+            assertEquals(before, file.readText(), "an unaffected file was rewritten")
+            assertEquals(modifiedBefore, file.lastModified(), "an unaffected file was touched")
         } finally {
             runBlocking { runCatching { reloaded.close() } }
             seedDir.deleteRecursively()

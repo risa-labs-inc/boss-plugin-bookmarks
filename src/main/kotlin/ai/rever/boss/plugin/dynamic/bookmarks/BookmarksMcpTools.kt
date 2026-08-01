@@ -46,6 +46,10 @@ internal class BookmarksMcpToolProvider(
                     ?: return@McpToolHandler McpToolResult("Missing required argument: url", isError = true)
                 val collection = args.string("collection") ?: "Favorites"
                 val bookmark = Bookmark(
+                    // Not the default id: Bookmark.generateId() is
+                    // "bookmark-<epochMillis>", so two adds in the same
+                    // millisecond would alias each other.
+                    id = manager.newBookmarkId(),
                     tabConfig = TabConfig(type = "browser", title = title, url = url),
                     workspaceName = "",
                 )
