@@ -30,7 +30,7 @@ jobs:
             "https://github.com/risa-labs-inc/boss-plugin-api/releases/download/v${API_VERSION}/boss-plugin-api-${API_VERSION}.jar"
         env:
           CI: 'true'
-          API_VERSION: '1.0.69'
+          API_VERSION: '1.0.73'
 
       - name: Run tests
         run: ./gradlew test --no-daemon
