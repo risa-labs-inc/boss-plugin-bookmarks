@@ -28,7 +28,7 @@ val bossPluginApiPath = "../boss-plugin-api"
 
 // One definition so the compileOnly, testImplementation, plugin.json and CI
 // pins cannot drift. processResources substitutes it into the manifest.
-val bossPluginApiVersion = "1.0.69"
+val bossPluginApiVersion = "1.0.73"
 
 // One definition so the compileOnly and testImplementation pins cannot drift.
 val bossPluginApiJar =

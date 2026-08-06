@@ -1,5 +1,6 @@
 package ai.rever.boss.plugin.dynamic.bookmarks
 
+import ai.rever.boss.plugin.ui.BossAlertDialog
 import ai.rever.boss.plugin.api.ActiveTabsProvider
 import ai.rever.boss.plugin.api.ContextMenuProvider
 import ai.rever.boss.plugin.api.WorkspaceDataProvider
@@ -1337,7 +1338,7 @@ private fun NewCollectionDialog(
 ) {
     var name by remember { mutableStateOf("") }
 
-    AlertDialog(
+    BossAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New Collection", color = LightGrayText) },
         text = {
@@ -1378,7 +1379,7 @@ private fun NewWorkspaceDialog(
 ) {
     var name by remember { mutableStateOf("") }
 
-    AlertDialog(
+    BossAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New Workspace", color = LightGrayText) },
         text = {
@@ -1418,7 +1419,7 @@ private fun DeleteCollectionDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
+    BossAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Delete Collection?", color = LightGrayText) },
         text = {
@@ -1454,7 +1455,7 @@ private fun RenameCollectionDialog(
 ) {
     var name by remember { mutableStateOf(collection.name) }
 
-    AlertDialog(
+    BossAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Rename Collection", color = LightGrayText) },
         text = {
@@ -1494,7 +1495,7 @@ private fun DeleteWorkspaceDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
+    BossAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Delete Workspace?", color = LightGrayText) },
         text = {
@@ -1530,7 +1531,7 @@ private fun RenameWorkspaceDialog(
 ) {
     var name by remember { mutableStateOf(workspace.name) }
 
-    AlertDialog(
+    BossAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Rename Workspace", color = LightGrayText) },
         text = {
@@ -1569,7 +1570,7 @@ private fun ClearFavoritesDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
+    BossAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Clear All Favorites?", color = LightGrayText) },
         text = {
@@ -1601,7 +1602,7 @@ private fun UnfavoriteAllWorkspacesDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
+    BossAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Unfavorite All Workspaces?", color = LightGrayText) },
         text = {
@@ -1634,7 +1635,7 @@ private fun ConfirmRemoveBookmarkDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
-    AlertDialog(
+    BossAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Remove Bookmark?", color = LightGrayText) },
         text = {
@@ -1668,7 +1669,7 @@ private fun CollectionSelectionDialog(
     onDismiss: () -> Unit,
     onSelect: (BookmarkCollection) -> Unit
 ) {
-    AlertDialog(
+    BossAlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title, color = LightGrayText) },
         text = {
