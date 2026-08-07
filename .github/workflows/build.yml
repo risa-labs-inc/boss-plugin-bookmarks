@@ -12,3 +12,7 @@ jobs:
       boss_plugin_api_version: '1.0.73'
     secrets:
       BOSS_STORE_PLUGIN_PUBLISH_KEY: ${{ secrets.BOSS_STORE_PLUGIN_PUBLISH_KEY }}
+      # main is ruleset-protected here, so the version bump cannot push as
+      # GITHUB_TOKEN. Unset resolves to empty and the release workflow falls
+      # back to GITHUB_TOKEN, so this is inert until the secret exists.
+      PLUGIN_RELEASE_TOKEN: ${{ secrets.PLUGIN_RELEASE_TOKEN }}
