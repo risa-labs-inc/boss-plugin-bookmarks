@@ -601,16 +601,41 @@ class BookmarkManager internal constructor(
     }
 
     /**
+     * Does this bookmark stand for [tab]?
+     *
+     * Type plus target — the URL or file path — is the identity. The title is
+     * deliberately *not* part of it for those tabs: [renameBookmark] lets the
+     * user relabel a bookmark, and comparing titles would make a renamed
+     * bookmark stop matching the very tab it was saved from, so the star would
+     * read "not bookmarked" and re-bookmarking would duplicate it.
+     *
+     * A tab with neither a URL nor a file path — a terminal — has no other
+     * identity to compare, so there the title is still all there is to go on.
+     * Renaming such a bookmark does detach it from its tab; that is the
+     * pre-existing behaviour for terminals, not something the rename introduced.
+     *
+     * Blank counts as absent, not just null: this plugin already reads `""` as
+     * "no target" ([BookmarksViewModel.openTab] skips an editor tab whose
+     * filePath is empty), so treating it as a real one would make every blank
+     * tab of a type identical — bookmark one and the star lights up on all of
+     * them, and un-starring any would remove another's bookmark. Only [tab] is
+     * checked because the equality below already forces the bookmark's own
+     * target to be the same string.
+     */
+    private fun Bookmark.matches(tab: TabConfig): Boolean {
+        if (tabConfig.type != tab.type) return false
+        val hasTarget = !tab.url.isNullOrBlank() || !tab.filePath.isNullOrBlank()
+        return tabConfig.url == tab.url &&
+            tabConfig.filePath == tab.filePath &&
+            (hasTarget || tabConfig.title == tab.title)
+    }
+
+    /**
      * Check if a tab is already bookmarked in any collection.
      */
     fun isTabBookmarked(tabConfig: TabConfig): Boolean {
         return _collections.value.any { collection ->
-            collection.bookmarks.any { bookmark ->
-                bookmark.tabConfig.type == tabConfig.type &&
-                bookmark.tabConfig.title == tabConfig.title &&
-                bookmark.tabConfig.url == tabConfig.url &&
-                bookmark.tabConfig.filePath == tabConfig.filePath
-            }
+            collection.bookmarks.any { it.matches(tabConfig) }
         }
     }
 
@@ -620,12 +645,7 @@ class BookmarkManager internal constructor(
      */
     fun findBookmarkForTab(tabConfig: TabConfig): Pair<String, String>? {
         _collections.value.forEach { collection ->
-            collection.bookmarks.firstOrNull { bookmark ->
-                bookmark.tabConfig.type == tabConfig.type &&
-                bookmark.tabConfig.title == tabConfig.title &&
-                bookmark.tabConfig.url == tabConfig.url &&
-                bookmark.tabConfig.filePath == tabConfig.filePath
-            }?.let { bookmark ->
+            collection.bookmarks.firstOrNull { it.matches(tabConfig) }?.let { bookmark ->
                 return Pair(collection.id, bookmark.id)
             }
         }
@@ -642,6 +662,34 @@ class BookmarkManager internal constructor(
                 current
             } else {
                 current.toMutableList().also { it[index] = it[index].updateBookmark(bookmark) }
+            }
+        }
+    }
+
+    /**
+     * Retitle the bookmark [bookmarkId] in [collectionId].
+     *
+     * Resolved by id inside the mutation rather than taking a whole [Bookmark]
+     * from the caller: the panel holds the snapshot it rendered before the
+     * rename dialog opened, and writing that back would undo a
+     * [markBookmarkAsAccessed] that landed while the dialog was up.
+     *
+     * A blank or unchanged title is a no-op, so it does not schedule a save.
+     */
+    fun renameBookmark(collectionId: String, bookmarkId: String, newTitle: String) {
+        val title = newTitle.trim()
+        mutateCollections { current ->
+            val index = current.indexOfFirst { it.id == collectionId }
+            val bookmark = current.getOrNull(index)?.findBookmark(bookmarkId)
+
+            if (index < 0 || bookmark == null || title.isEmpty() || bookmark.tabConfig.title == title) {
+                current
+            } else {
+                current.toMutableList().also {
+                    it[index] = it[index].updateBookmark(
+                        bookmark.copy(tabConfig = bookmark.tabConfig.copy(title = title))
+                    )
+                }
             }
         }
     }

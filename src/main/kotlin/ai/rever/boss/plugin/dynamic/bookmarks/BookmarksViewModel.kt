@@ -164,6 +164,19 @@ class BookmarksViewModel(
         _statusMessage.value = "Bookmark removed"
     }
 
+    /**
+     * Give the bookmark a new display title.
+     *
+     * Passes the id rather than the [Bookmark] the panel is holding so a rename
+     * cannot write back a snapshot taken before the dialog opened.
+     */
+    fun renameBookmark(collectionId: String, bookmarkId: String, newTitle: String) {
+        val title = newTitle.trim()
+        if (title.isEmpty()) return
+        bookmarkManager.renameBookmark(collectionId, bookmarkId, title)
+        _statusMessage.value = "Bookmark renamed to $title"
+    }
+
     fun moveBookmark(bookmarkId: String, fromCollectionId: String, toCollectionId: String) {
         bookmarkManager.moveBookmark(bookmarkId, fromCollectionId, toCollectionId)
         _statusMessage.value = "Bookmark moved"
