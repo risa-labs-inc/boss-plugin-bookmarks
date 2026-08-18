@@ -61,7 +61,13 @@ class BookmarkManagerRenameTest {
     private fun favorites(): BookmarkCollection =
         manager.collections.value.first { it.name == BookmarkCollection.FAVORITES_NAME }
 
-    /** Adds [tab] to Favorites and returns the id it was actually stored under. */
+    /**
+     * Adds [tab] to Favorites and returns its collection and bookmark id.
+     *
+     * The id is minted by [BookmarkManager.newBookmarkId], so it is free and
+     * `withFreeId` has no reason to re-assign it — this does not read the id
+     * back, and a caller supplying its own id could not assume the same.
+     */
     private fun store(tab: TabConfig): Pair<String, String> {
         val id = manager.newBookmarkId()
         manager.addBookmark(
@@ -146,6 +152,20 @@ class BookmarkManagerRenameTest {
 
         assertTrue(manager.isTabBookmarked(browserTab("Site", "https://example.com/")))
         assertTrue(!manager.isTabBookmarked(browserTab("Site", "https://other.test/")))
+    }
+
+    @Test
+    fun `a blank url is treated as no target, not as a target every blank tab shares`() {
+        // The regression this guards: null-checking the target instead of
+        // blank-checking it drops the title from identity for `url = ""`, so
+        // every blank browser tab matches the first one bookmarked — and the
+        // host's un-star path goes through findBookmarkForTab, so un-starring
+        // one tab would delete the bookmark saved from another.
+        val blank = browserTab("New Tab", "")
+        val (collectionId, bookmarkId) = store(blank)
+
+        assertEquals(collectionId to bookmarkId, manager.findBookmarkForTab(blank))
+        assertNull(manager.findBookmarkForTab(browserTab("Something Else", "")))
     }
 
     @Test

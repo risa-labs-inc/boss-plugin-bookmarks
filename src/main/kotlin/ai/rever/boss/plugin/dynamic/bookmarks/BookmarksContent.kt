@@ -1654,7 +1654,10 @@ private fun RenameBookmarkDialog(
     onDismiss: () -> Unit,
     onRename: (String) -> Unit
 ) {
-    var title by remember { mutableStateOf(bookmark.tabConfig.title) }
+    // Keyed by id: if the panel ever swaps the target bookmark without the
+    // dialog leaving composition, an unkeyed remember would keep the previous
+    // bookmark's title in the field while renaming the new one.
+    var title by remember(bookmark.id) { mutableStateOf(bookmark.tabConfig.title) }
     val trimmed = title.trim()
 
     BossAlertDialog(

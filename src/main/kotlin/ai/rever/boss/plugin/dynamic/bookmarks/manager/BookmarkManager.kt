@@ -613,10 +613,18 @@ class BookmarkManager internal constructor(
      * identity to compare, so there the title is still all there is to go on.
      * Renaming such a bookmark does detach it from its tab; that is the
      * pre-existing behaviour for terminals, not something the rename introduced.
+     *
+     * Blank counts as absent, not just null: this plugin already reads `""` as
+     * "no target" ([BookmarksViewModel.openTab] skips an editor tab whose
+     * filePath is empty), so treating it as a real one would make every blank
+     * tab of a type identical — bookmark one and the star lights up on all of
+     * them, and un-starring any would remove another's bookmark. Only [tab] is
+     * checked because the equality below already forces the bookmark's own
+     * target to be the same string.
      */
     private fun Bookmark.matches(tab: TabConfig): Boolean {
         if (tabConfig.type != tab.type) return false
-        val hasTarget = tab.url != null || tab.filePath != null
+        val hasTarget = !tab.url.isNullOrBlank() || !tab.filePath.isNullOrBlank()
         return tabConfig.url == tab.url &&
             tabConfig.filePath == tab.filePath &&
             (hasTarget || tabConfig.title == tab.title)
