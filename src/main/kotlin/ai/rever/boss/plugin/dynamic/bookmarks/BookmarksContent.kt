@@ -160,6 +160,7 @@ private fun BookmarksPanel(
     var showUnfavoriteAllWorkspacesDialog by remember { mutableStateOf(false) }
 
     // Bookmark operation dialog states
+    var bookmarkToRename by remember { mutableStateOf<Pair<Bookmark, String>?>(null) }
     var bookmarkToRemove by remember { mutableStateOf<Pair<Bookmark, String>?>(null) }
     var bookmarkToCopy by remember { mutableStateOf<Pair<Bookmark, String>?>(null) }
     var bookmarkToMove by remember { mutableStateOf<Pair<Bookmark, String>?>(null) }
@@ -292,6 +293,7 @@ private fun BookmarksPanel(
                                 onClick = { viewModel.onBookmarkClick(bookmark, coroutineScope) },
                                 contextMenuProvider = contextMenuProvider,
                                 activeTabsProvider = activeTabsProvider,
+                                onRename = { bookmarkToRename = Pair(bookmark, favoritesCollection.id) },
                                 onRemove = { bookmarkToRemove = Pair(bookmark, favoritesCollection.id) },
                                 onCopy = { bookmarkToCopy = Pair(bookmark, favoritesCollection.id) },
                                 onMove = { bookmarkToMove = Pair(bookmark, favoritesCollection.id) }
@@ -356,6 +358,7 @@ private fun BookmarksPanel(
                             activeTabsProvider = activeTabsProvider,
                             onRename = { collectionToRename = collection },
                             onDelete = { collectionToDelete = collection },
+                            onBookmarkRename = { bookmark -> bookmarkToRename = Pair(bookmark, collection.id) },
                             onBookmarkRemove = { bookmark -> bookmarkToRemove = Pair(bookmark, collection.id) },
                             onBookmarkCopy = { bookmark -> bookmarkToCopy = Pair(bookmark, collection.id) },
                             onBookmarkMove = { bookmark -> bookmarkToMove = Pair(bookmark, collection.id) }
@@ -585,6 +588,17 @@ private fun BookmarksPanel(
         )
     }
 
+    bookmarkToRename?.let { (bookmark, collectionId) ->
+        RenameBookmarkDialog(
+            bookmark = bookmark,
+            onDismiss = { bookmarkToRename = null },
+            onRename = { newTitle ->
+                viewModel.renameBookmark(collectionId, bookmark.id, newTitle)
+                bookmarkToRename = null
+            }
+        )
+    }
+
     bookmarkToRemove?.let { (bookmark, collectionId) ->
         ConfirmRemoveBookmarkDialog(
             bookmark = bookmark,
@@ -695,11 +709,14 @@ private fun BookmarkItem(
     onClick: () -> Unit,
     contextMenuProvider: ContextMenuProvider?,
     activeTabsProvider: ActiveTabsProvider?,
+    onRename: () -> Unit,
     onRemove: () -> Unit,
     onCopy: () -> Unit,
     onMove: () -> Unit
 ) {
     val contextMenuItems = listOf(
+        ContextMenuItemData("Rename Bookmark", Icons.Outlined.Edit, onClick = { onRename() }),
+        ContextMenuItemData("", null, isDivider = true),
         ContextMenuItemData("Remove from Collection", Icons.Outlined.Delete, onClick = { onRemove() }),
         ContextMenuItemData("", null, isDivider = true),
         ContextMenuItemData("Copy to Collection", Icons.Outlined.ContentCopy, onClick = { onCopy() }),
@@ -805,6 +822,7 @@ private fun CollectionItem(
     activeTabsProvider: ActiveTabsProvider?,
     onRename: () -> Unit,
     onDelete: () -> Unit,
+    onBookmarkRename: (Bookmark) -> Unit,
     onBookmarkRemove: (Bookmark) -> Unit,
     onBookmarkCopy: (Bookmark) -> Unit,
     onBookmarkMove: (Bookmark) -> Unit
@@ -912,6 +930,7 @@ private fun CollectionItem(
                             onClick = { onBookmarkClick(bookmark) },
                             contextMenuProvider = contextMenuProvider,
                             activeTabsProvider = activeTabsProvider,
+                            onRename = { onBookmarkRename(bookmark) },
                             onRemove = { onBookmarkRemove(bookmark) },
                             onCopy = { onBookmarkCopy(bookmark) },
                             onMove = { onBookmarkMove(bookmark) }
@@ -1617,6 +1636,51 @@ private fun UnfavoriteAllWorkspacesDialog(
                 colors = ButtonDefaults.textButtonColors(contentColor = BossThemeColors.ErrorColor)
             ) {
                 Text("Unfavorite All")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+        backgroundColor = DarkBackground,
+        shape = RoundedCornerShape(8.dp)
+    )
+}
+
+@Composable
+private fun RenameBookmarkDialog(
+    bookmark: Bookmark,
+    onDismiss: () -> Unit,
+    onRename: (String) -> Unit
+) {
+    var title by remember { mutableStateOf(bookmark.tabConfig.title) }
+    val trimmed = title.trim()
+
+    BossAlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename Bookmark", color = LightGrayText) },
+        text = {
+            TextField(
+                value = title,
+                onValueChange = { title = it },
+                placeholder = { Text("Bookmark name") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = TextFieldDefaults.textFieldColors(
+                    backgroundColor = SearchBackground,
+                    textColor = BossThemeColors.TextPrimary
+                )
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { if (trimmed.isNotEmpty()) onRename(trimmed) },
+                // Compared against the trimmed value so adding trailing
+                // whitespace does not look like a rename that then no-ops.
+                enabled = trimmed.isNotEmpty() && trimmed != bookmark.tabConfig.title
+            ) {
+                Text("Rename")
             }
         },
         dismissButton = {
