@@ -5,6 +5,7 @@ import ai.rever.boss.plugin.api.ActiveTabsProvider
 import ai.rever.boss.plugin.api.ContextMenuProvider
 import ai.rever.boss.plugin.api.WorkspaceDataProvider
 import ai.rever.boss.plugin.bookmark.Bookmark
+import ai.rever.boss.plugin.bookmark.BookmarkLibraryState
 import ai.rever.boss.plugin.bookmark.BookmarkCollection
 import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
 import ai.rever.boss.plugin.scrollbar.getPanelScrollbarConfig
@@ -27,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
 import androidx.compose.material.icons.filled.*
@@ -39,6 +41,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.builtins.ListSerializer
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -116,6 +122,9 @@ private fun BookmarksPanel(
     activeTabsProvider: ActiveTabsProvider?
 ) {
     val collections by viewModel.collections.collectAsState()
+    val libraryState = viewModel.library?.state?.collectAsState()?.value
+    val undoToken by viewModel.undoToken.collectAsState()
+    val busy by viewModel.busy.collectAsState()
     val workspaces by viewModel.workspaces.collectAsState()
     val favoriteWorkspaces by viewModel.favoriteWorkspaces.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
@@ -127,7 +136,7 @@ private fun BookmarksPanel(
 
     // Section expansion states
     var favoritesExpanded by remember { mutableStateOf(true) }
-    var collectionsExpanded by remember { mutableStateOf(false) }
+    var collectionsExpanded by remember { mutableStateOf(true) }
     var allWorkspacesExpanded by remember { mutableStateOf(false) }
     var favoriteWorkspacesExpanded by remember { mutableStateOf(true) }
 
@@ -174,7 +183,7 @@ private fun BookmarksPanel(
     // their own section, from filteredFavorites.
     val filteredCollections = remember(collections, searchQuery) {
         filterCollections(collections, searchQuery)
-            .filter { !it.isFavorite }
+            .filter { libraryState != null || !it.isFavorite }
             .keyedUniquely("coll") { it.id }
     }
     val filteredFavoriteWorkspaces = remember(favoriteWorkspaces, workspaces, searchQuery) {
@@ -190,7 +199,10 @@ private fun BookmarksPanel(
     }
 
     // Filter favorites collection bookmarks
-    val favoritesCollection = collections.find { it.isFavorite }
+    val favoritesCollection = if (libraryState != null) BookmarkCollection(
+        id = "sidebar-favorites", name = "Favorites", bookmarks = collections.flatMap { it.bookmarks }.filter { it.id in libraryState.favoriteBookmarkIds },
+    ) else collections.find { it.isFavorite }
+    fun collectionFor(bookmark: Bookmark): String = collections.firstOrNull { c -> c.bookmarks.any { it.id == bookmark.id } }?.id.orEmpty()
     val filteredFavorites = remember(favoritesCollection?.bookmarks, searchQuery) {
         favoritesCollection
             ?.let { filterBookmarks(it.bookmarks, searchQuery) }
@@ -236,6 +248,14 @@ private fun BookmarksPanel(
             )
         }
 
+        if (libraryState != null && !libraryState.ready && libraryState.error == null) {
+            Text("Loading bookmarks…", modifier = Modifier.padding(12.dp))
+        }
+        if (libraryState?.error != null) {
+            Text(libraryState.error.orEmpty(), color = MaterialTheme.colors.error, modifier = Modifier.padding(12.dp))
+            TextButton(onClick = viewModel::reloadLibrary) { Text("Reload library") }
+        }
+        if (undoToken != null) TextButton(onClick = viewModel::undoDelete, enabled = !busy) { Text("Undo delete") }
         // Toast messages
         AnimatedVisibility(
             visible = statusMessage != null || errorMessage != null,
@@ -263,7 +283,7 @@ private fun BookmarksPanel(
             if (favoritesCollection != null) {
                 item {
                     CollapsibleSection(
-                        title = favoritesCollection.name,
+                        title = "Favorites (${favoritesCollection.bookmarks.size})",
                         isExpanded = favoritesExpanded,
                         onToggle = { favoritesExpanded = !favoritesExpanded },
                         icon = Icons.Outlined.Star,
@@ -293,10 +313,13 @@ private fun BookmarksPanel(
                                 onClick = { viewModel.onBookmarkClick(bookmark, coroutineScope) },
                                 contextMenuProvider = contextMenuProvider,
                                 activeTabsProvider = activeTabsProvider,
-                                onRename = { bookmarkToRename = Pair(bookmark, favoritesCollection.id) },
-                                onRemove = { bookmarkToRemove = Pair(bookmark, favoritesCollection.id) },
-                                onCopy = { bookmarkToCopy = Pair(bookmark, favoritesCollection.id) },
-                                onMove = { bookmarkToMove = Pair(bookmark, favoritesCollection.id) }
+                                onRename = { bookmarkToRename = Pair(bookmark, collectionFor(bookmark)) },
+                                onRemove = { bookmarkToRemove = Pair(bookmark, collectionFor(bookmark)) },
+                                onCopy = { bookmarkToCopy = Pair(bookmark, collectionFor(bookmark)) },
+                                onMove = { bookmarkToMove = Pair(bookmark, collectionFor(bookmark)) },
+                                favorite = true,
+                                onToggleFavorite = { viewModel.setFavorite(bookmark.id, false) },
+                                onOpenNew = { viewModel.openBookmark(bookmark, true) },
                             )
                         }
                     }
@@ -307,7 +330,7 @@ private fun BookmarksPanel(
             item {
                 Spacer(modifier = Modifier.height(8.dp))
                 CollapsibleSection(
-                    title = "Collections",
+                    title = "All Bookmarks",
                     isExpanded = collectionsExpanded,
                     onToggle = { collectionsExpanded = !collectionsExpanded },
                     icon = Icons.Outlined.FolderOpen,
@@ -348,7 +371,7 @@ private fun BookmarksPanel(
                             // Tracked by item key, not collection id: should two
                             // collections ever share an id, keying on it would
                             // expand and collapse them together.
-                            isExpanded = expandedCollections.contains(itemKey),
+                            isExpanded = expandedCollections.contains(itemKey) || searchQuery.isNotBlank(),
                             onToggleExpand = { toggleCollectionExpansion(itemKey) },
                             onBookmarkClick = { bookmark ->
                                 viewModel.onBookmarkClick(bookmark, coroutineScope)
@@ -361,7 +384,10 @@ private fun BookmarksPanel(
                             onBookmarkRename = { bookmark -> bookmarkToRename = Pair(bookmark, collection.id) },
                             onBookmarkRemove = { bookmark -> bookmarkToRemove = Pair(bookmark, collection.id) },
                             onBookmarkCopy = { bookmark -> bookmarkToCopy = Pair(bookmark, collection.id) },
-                            onBookmarkMove = { bookmark -> bookmarkToMove = Pair(bookmark, collection.id) }
+                            onBookmarkMove = { bookmark -> bookmarkToMove = Pair(bookmark, collection.id) },
+                            favoriteIds = libraryState?.favoriteBookmarkIds.orEmpty(),
+                            onToggleFavorite = { viewModel.setFavorite(it.id, it.id !in libraryState?.favoriteBookmarkIds.orEmpty()) },
+                            onOpenNew = { viewModel.openBookmark(it, true) },
                         )
                     }
                 }
@@ -499,12 +525,9 @@ private fun BookmarksPanel(
 
     // Dialogs
     if (showNewCollectionDialog) {
-        NewCollectionDialog(
+        LibraryNameDialog("New Collection", "", busy, errorMessage,
             onDismiss = { showNewCollectionDialog = false },
-            onCreate = { name ->
-                viewModel.createCollection(name)
-                showNewCollectionDialog = false
-            }
+            onConfirm = { name -> viewModel.createCollection(name) { showNewCollectionDialog = false } },
         )
     }
 
@@ -519,24 +542,18 @@ private fun BookmarksPanel(
     }
 
     collectionToDelete?.let { collection ->
-        DeleteCollectionDialog(
-            collection = collection,
+        SafeDeleteCollectionDialog(
+            collection, collections, busy, errorMessage,
             onDismiss = { collectionToDelete = null },
-            onConfirm = {
-                viewModel.deleteCollection(collection.id)
-                collectionToDelete = null
-            }
+            onConfirm = { destination -> viewModel.deleteCollection(collection.id, destination) { collectionToDelete = null } },
         )
     }
 
     collectionToRename?.let { collection ->
-        RenameCollectionDialog(
-            collection = collection,
+        val revision = remember(collection.id) { libraryState?.revision }
+        LibraryNameDialog("Rename Collection", collection.name, busy, errorMessage,
             onDismiss = { collectionToRename = null },
-            onRename = { newName ->
-                viewModel.renameCollection(collection.id, newName)
-                collectionToRename = null
-            }
+            onConfirm = { name -> viewModel.renameCollection(collection.id, name, revision) { collectionToRename = null } },
         )
     }
 
@@ -566,12 +583,7 @@ private fun BookmarksPanel(
         ClearFavoritesDialog(
             onDismiss = { showClearFavoritesDialog = false },
             onConfirm = {
-                favoritesCollection?.let { fav ->
-                    fav.bookmarks.forEach { bookmark ->
-                        viewModel.removeBookmark(fav.id, bookmark.id)
-                    }
-                }
-                showClearFavoritesDialog = false
+                viewModel.clearFavorites { showClearFavoritesDialog = false }
             }
         )
     }
@@ -589,23 +601,26 @@ private fun BookmarksPanel(
     }
 
     bookmarkToRename?.let { (bookmark, collectionId) ->
-        RenameBookmarkDialog(
+        LibraryEditDialog(
             bookmark = bookmark,
+            collectionId = collectionId,
+            state = libraryState ?: BookmarkLibraryState(collections = collections),
+            busy = busy,
+            error = errorMessage,
             onDismiss = { bookmarkToRename = null },
-            onRename = { newTitle ->
-                viewModel.renameBookmark(collectionId, bookmark.id, newTitle)
-                bookmarkToRename = null
-            }
+            onSave = { name, target, collection, favorite, revision ->
+                viewModel.saveEdit(bookmark, name, target, collection, favorite, revision) { bookmarkToRename = null }
+            },
         )
     }
 
     bookmarkToRemove?.let { (bookmark, collectionId) ->
+        val revision = remember(bookmark.id) { libraryState?.revision }
         ConfirmRemoveBookmarkDialog(
             bookmark = bookmark,
             onDismiss = { bookmarkToRemove = null },
             onConfirm = {
-                viewModel.removeBookmark(collectionId, bookmark.id)
-                bookmarkToRemove = null
+                viewModel.removeBookmark(collectionId, bookmark.id, revision) { bookmarkToRemove = null }
             }
         )
     }
@@ -616,8 +631,7 @@ private fun BookmarksPanel(
             collections = collections.filter { !it.isFavorite && it.id != fromCollectionId },
             onDismiss = { bookmarkToCopy = null },
             onSelect = { targetCollection ->
-                viewModel.copyBookmark(targetCollection.name, bookmark)
-                bookmarkToCopy = null
+                viewModel.copyBookmark(targetCollection.name, bookmark) { bookmarkToCopy = null }
             }
         )
     }
@@ -628,8 +642,7 @@ private fun BookmarksPanel(
             collections = collections.filter { it.id != fromCollectionId },
             onDismiss = { bookmarkToMove = null },
             onSelect = { targetCollection ->
-                viewModel.moveBookmark(bookmark.id, fromCollectionId, targetCollection.id)
-                bookmarkToMove = null
+                viewModel.moveBookmark(bookmark.id, fromCollectionId, targetCollection.id) { bookmarkToMove = null }
             }
         )
     }
@@ -712,12 +725,18 @@ private fun BookmarkItem(
     onRename: () -> Unit,
     onRemove: () -> Unit,
     onCopy: () -> Unit,
-    onMove: () -> Unit
+    onMove: () -> Unit,
+    favorite: Boolean,
+    onToggleFavorite: () -> Unit,
+    onOpenNew: () -> Unit,
 ) {
     val contextMenuItems = listOf(
-        ContextMenuItemData("Rename Bookmark", Icons.Outlined.Edit, onClick = { onRename() }),
+        ContextMenuItemData("Open", Icons.AutoMirrored.Outlined.OpenInNew, onClick = onClick),
+        ContextMenuItemData("Open in New Tab", Icons.Outlined.Add, onClick = onOpenNew),
+        ContextMenuItemData("Edit Bookmark", Icons.Outlined.Edit, onClick = onRename),
+        ContextMenuItemData(if (favorite) "Remove from Favorites" else "Show in Favorites", Icons.Outlined.Star, onClick = onToggleFavorite),
         ContextMenuItemData("", null, isDivider = true),
-        ContextMenuItemData("Remove from Collection", Icons.Outlined.Delete, onClick = { onRemove() }),
+        ContextMenuItemData("Delete Bookmark", Icons.Outlined.Delete, onClick = { onRemove() }),
         ContextMenuItemData("", null, isDivider = true),
         ContextMenuItemData("Copy to Collection", Icons.Outlined.ContentCopy, onClick = { onCopy() }),
         ContextMenuItemData("Move to Collection", Icons.AutoMirrored.Outlined.DriveFileMove, onClick = { onMove() })
@@ -755,12 +774,12 @@ private fun BookmarkItem(
         )
         Spacer(modifier = Modifier.width(4.dp))
         Icon(
-            imageVector = Icons.Filled.Star,
-            contentDescription = "Remove bookmark",
+            imageVector = if (favorite) Icons.Filled.Star else Icons.Outlined.StarBorder,
+            contentDescription = if (favorite) "Remove from Favorites" else "Show in Favorites",
             modifier = Modifier
                 .size(16.dp)
-                .clickable(onClick = onRemove),
-            tint = GoldFavorite
+                .clickable(onClick = onToggleFavorite),
+            tint = if (favorite) AccentColor else MutedGrayText
         )
     }
 }
@@ -825,17 +844,24 @@ private fun CollectionItem(
     onBookmarkRename: (Bookmark) -> Unit,
     onBookmarkRemove: (Bookmark) -> Unit,
     onBookmarkCopy: (Bookmark) -> Unit,
-    onBookmarkMove: (Bookmark) -> Unit
+    onBookmarkMove: (Bookmark) -> Unit,
+    favoriteIds: Set<String>,
+    onToggleFavorite: (Bookmark) -> Unit,
+    onOpenNew: (Bookmark) -> Unit,
 ) {
     val filteredBookmarks = remember(collection.bookmarks, searchQuery) {
         filterBookmarks(collection.bookmarks, searchQuery)
     }
 
+    val clipboard = LocalClipboardManager.current
     val collectionMenuItems = buildList {
         if (!collection.isFavorite) {
             add(ContextMenuItemData("Rename Collection", Icons.Outlined.Edit, onClick = { onRename() }))
         }
-        add(ContextMenuItemData("Export Collection", Icons.Outlined.FileDownload, onClick = { }))
+        add(ContextMenuItemData("Copy Collection JSON", Icons.Outlined.ContentCopy, onClick = {
+            val json = Json { prettyPrint = true; encodeDefaults = true }
+            clipboard.setText(AnnotatedString(json.encodeToString(ListSerializer(BookmarkCollection.serializer()), listOf(collection))))
+        }))
         if (!collection.isFavorite) {
             add(ContextMenuItemData("", null, isDivider = true))
             add(ContextMenuItemData("Delete Collection", Icons.Outlined.Delete, onClick = { onDelete() }))
@@ -933,7 +959,10 @@ private fun CollectionItem(
                             onRename = { onBookmarkRename(bookmark) },
                             onRemove = { onBookmarkRemove(bookmark) },
                             onCopy = { onBookmarkCopy(bookmark) },
-                            onMove = { onBookmarkMove(bookmark) }
+                            onMove = { onBookmarkMove(bookmark) },
+                            favorite = bookmark.id in favoriteIds,
+                            onToggleFavorite = { onToggleFavorite(bookmark) },
+                            onOpenNew = { onOpenNew(bookmark) },
                         )
                     }
                 }
@@ -1594,7 +1623,7 @@ private fun ClearFavoritesDialog(
         title = { Text("Clear All Favorites?", color = LightGrayText) },
         text = {
             Text(
-                "All favorited bookmarks will be removed. This action cannot be undone.",
+                "Bookmarks will be removed from the Favorites shelf. They remain saved in All Bookmarks.",
                 color = MutedGrayText
             )
         },
@@ -1704,10 +1733,10 @@ private fun ConfirmRemoveBookmarkDialog(
 ) {
     BossAlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Remove Bookmark?", color = LightGrayText) },
+        title = { Text("Delete Bookmark?", color = LightGrayText) },
         text = {
             Text(
-                "Remove '${bookmark.tabConfig.title}' from this collection?",
+                "Delete '${bookmark.tabConfig.title}'? Open tabs stay open. You can undo this deletion.",
                 color = MutedGrayText
             )
         },
@@ -1716,7 +1745,7 @@ private fun ConfirmRemoveBookmarkDialog(
                 onClick = onConfirm,
                 colors = ButtonDefaults.textButtonColors(contentColor = BossThemeColors.ErrorColor)
             ) {
-                Text("Remove")
+                Text("Delete")
             }
         },
         dismissButton = {
@@ -1792,7 +1821,10 @@ private fun filterBookmarks(bookmarks: List<Bookmark>, query: String): List<Book
     return bookmarks.filter { bookmark ->
         bookmark.tabConfig.title.lowercase().contains(lowerQuery) ||
         (bookmark.tabConfig.url?.lowercase()?.contains(lowerQuery) == true) ||
-        bookmark.tags.any { it.lowercase().contains(lowerQuery) }
+        bookmark.tags.any { it.lowercase().contains(lowerQuery) } ||
+        bookmark.notes.lowercase().contains(lowerQuery) ||
+        bookmark.tabConfig.filePath?.lowercase()?.contains(lowerQuery) == true ||
+        bookmark.tabConfig.workingDirectory?.lowercase()?.contains(lowerQuery) == true
     }
 }
 
@@ -1800,7 +1832,7 @@ private fun filterCollections(collections: List<BookmarkCollection>, query: Stri
     if (query.isBlank()) return collections
     val lowerQuery = query.lowercase()
     return collections.filter { collection ->
-        collection.name.lowercase().contains(lowerQuery)
+        collection.name.lowercase().contains(lowerQuery) || filterBookmarks(collection.bookmarks, query).isNotEmpty()
     }
 }
 

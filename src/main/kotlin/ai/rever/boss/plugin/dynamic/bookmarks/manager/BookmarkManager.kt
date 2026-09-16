@@ -34,9 +34,11 @@ import java.util.UUID
 class BookmarkManager internal constructor(
     // Injectable for tests; production callers use the no-arg constructor and
     // get the real ~/Documents/BOSS/bookmarks location.
-    private val fileManager: BookmarkFileManager
+    private val fileManager: BookmarkFileManager,
+    private val loadCollections: Boolean = true,
 ) {
     constructor() : this(BookmarkFileManager())
+    constructor(spaceFavoritesOnly: Boolean) : this(BookmarkFileManager(), !spaceFavoritesOnly)
 
     // Getter (no backing field): see BookmarkFileManager.logger — avoids a
     // Compose-emitted $stable reference the host's ComponentLogger lacks.
@@ -83,6 +85,11 @@ class BookmarkManager internal constructor(
     private fun loadAllData() {
         scope.launch {
             try {
+                if (!loadCollections) {
+                    val loaded = fileManager.loadFavoriteWorkspaces()
+                    _favoriteWorkspaces.update { pending -> loaded + pending.filterNot { p -> loaded.any { it.workspaceId == p.workspaceId } } }
+                    return@launch
+                }
                 // Load collections
                 val onDisk = fileManager.loadCollections()
 

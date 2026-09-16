@@ -5,7 +5,7 @@ import ai.rever.boss.plugin.api.SearchMatchRange
 import ai.rever.boss.plugin.api.SearchProvider
 import ai.rever.boss.plugin.api.SearchResultAction
 import ai.rever.boss.plugin.api.SearchResultIcon
-import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
+import ai.rever.boss.plugin.api.BookmarkDataProvider
 
 /**
  * Search provider that enables bookmarks to appear in GlobalSearchService results.
@@ -14,7 +14,7 @@ import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
  * results that can be opened by the global search UI.
  */
 internal class BookmarkSearchProvider(
-    private val bookmarkManager: BookmarkManager
+    private val bookmarkManager: BookmarkDataProvider
 ) : SearchProvider {
 
     override val providerId = "bookmarks"
@@ -76,24 +76,10 @@ internal class BookmarkSearchProvider(
                     }
 
                     // Determine action based on tab type
-                    val action = when (bookmark.tabConfig.type) {
-                        "browser" -> SearchResultAction.OpenUrl(url ?: "about:blank")
-                        "editor" -> {
-                            val filePath = bookmark.tabConfig.filePath
-                            if (filePath != null) {
-                                SearchResultAction.OpenFile(filePath)
-                            } else {
-                                SearchResultAction.Custom("open-bookmark", mapOf(
-                                    "bookmarkId" to bookmark.id,
-                                    "collectionId" to collection.id
-                                ))
-                            }
-                        }
-                        else -> SearchResultAction.Custom("open-bookmark", mapOf(
-                            "bookmarkId" to bookmark.id,
-                            "collectionId" to collection.id
-                        ))
-                    }
+                    val action = SearchResultAction.Custom("open-bookmark", mapOf(
+                        "bookmarkId" to bookmark.id,
+                        "collectionId" to collection.id,
+                    ))
 
                     results.add(
                         PluginSearchResult(
