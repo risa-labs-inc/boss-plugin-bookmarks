@@ -36,7 +36,7 @@ class BookmarkLibraryStoreTest {
             ready(store); val request = request(store)
             val first = store.saveBookmark(request); assertTrue(first.success)
             assertFalse(store.saveBookmark(request).success)
-            val duplicate = store.saveBookmark(request(store)); assertFalse(duplicate.success); assertEquals(first.bookmarkId, duplicate.duplicateBookmarkId)
+            val duplicate = store.saveBookmark(request(store, favorite = false)); assertFalse(duplicate.success); assertEquals(first.bookmarkId, duplicate.duplicateBookmarkId)
             assertTrue(store.saveBookmark(request(store).copy(allowCopy = true)).success)
             assertEquals(2, store.state.value.collections.flatMap { it.bookmarks }.size)
         } finally { store.close(); dir.deleteRecursively() }
@@ -137,6 +137,40 @@ class BookmarkLibraryStoreTest {
             assertFalse(store.state.value.ready)
             assertEquals(1, store.state.value.collections.single().bookmarks.size)
             assertFalse(File(dir, "bookmark-library.json").exists())
+        } finally { store.close(); dir.deleteRecursively() }
+    }
+
+    @Test fun `adding existing destination to favorites preserves its record and is durable and idempotent`() = runBlocking {
+        val dir = Files.createTempDirectory("library-add-favorite").toFile()
+        val store = BookmarkLibraryStore(BookmarkLibraryDisk(dir.path), false)
+        try {
+            ready(store)
+            val saved = store.saveBookmark(request(store, title = "My saved title", favorite = false))
+            assertTrue(saved.success)
+            assertTrue(store.compatibilityUpdate(store.state.value.revision) { collections ->
+                collections.map { collection -> collection.copy(bookmarks = collection.bookmarks.map { it.copy(notes = "Important notes", tags = listOf("Work"), createdAt = 123) }) }
+            }.success)
+            val original = store.state.value.collections.single().bookmarks.single()
+            val other = store.createCollection("Other", store.state.value.revision).collectionId!!
+            val star = store.saveBookmark(request(store, title = "Different current tab title").copy(collectionId = other))
+            assertTrue(star.success)
+            assertEquals(original.id, star.bookmarkId)
+            assertEquals(saved.collectionId, star.collectionId)
+            assertEquals(original, store.state.value.collections.flatMap { it.bookmarks }.single())
+            assertEquals(setOf(original.id), store.state.value.favoriteBookmarkIds)
+            val revision = store.state.value.revision
+            repeat(2) {
+                assertTrue(store.saveBookmark(request(store, title = "Another title")).success)
+                assertEquals(revision, store.state.value.revision)
+            }
+            store.close()
+            val restarted = BookmarkLibraryStore(BookmarkLibraryDisk(dir.path), false)
+            try {
+                ready(restarted)
+                assertEquals(original, restarted.state.value.collections.flatMap { it.bookmarks }.single())
+                assertEquals(setOf(original.id), restarted.state.value.favoriteBookmarkIds)
+                assertEquals(saved.collectionId, restarted.state.value.collections.first { it.bookmarks.isNotEmpty() }.id)
+            } finally { restarted.close() }
         } finally { store.close(); dir.deleteRecursively() }
     }
 

@@ -109,7 +109,15 @@ internal class BookmarkLibraryStore(
         val records = current.collections.flatMap { it.bookmarks }
         val existing = request.bookmarkId?.let { id -> records.find { it.id == id } ?: error("This bookmark no longer exists.") }
         val duplicate = records.find { it.id != existing?.id && sameTarget(it.tabConfig, target) }
-        if (duplicate != null && !request.allowCopy && (existing == null || !sameTarget(existing.tabConfig, target))) {
+        if (existing == null && duplicate != null && request.favorite && !request.allowCopy) {
+            // Adding a saved destination to Favorites changes membership only. It must
+            // not rename, move, duplicate, or discard metadata from the saved record.
+            val collection = current.collections.first { it.bookmarks.any { record -> record.id == duplicate.id } }
+            Change(
+                current.copy(favoriteBookmarkIds = current.favoriteBookmarkIds + duplicate.id, defaultFavorite = true),
+                BookmarkMutationResult(true, bookmarkId = duplicate.id, collectionId = collection.id),
+            )
+        } else if (duplicate != null && !request.allowCopy && (existing == null || !sameTarget(existing.tabConfig, target))) {
             Change(current, BookmarkMutationResult(false, duplicateBookmarkId = duplicate.id, message = "This destination is already saved. Edit it or deliberately save a copy."))
         } else {
             val template = existing ?: duplicate?.takeIf { request.allowCopy }
