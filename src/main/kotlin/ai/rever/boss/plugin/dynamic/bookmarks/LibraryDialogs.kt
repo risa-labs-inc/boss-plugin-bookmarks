@@ -60,7 +60,7 @@ internal fun LibraryEditDialog(
                 })
                 OutlinedTextField(target, { target = it }, label = { Text(when(type) { "browser" -> "Address"; "terminal" -> "Startup folder"; else -> "File path" }) }, singleLine = true, enabled = !busy)
                 if (type == "terminal") OutlinedTextField(command, { command = it }, label = { Text("Initial command (optional)") }, singleLine = true, enabled = !busy)
-                CollectionPicker(state.collections, destination, { destination = it }, !busy)
+                CollectionPicker(state.collections, destination, { destination = it }, !busy, state.unfiledCollectionIds)
                 Row { Checkbox(favorite, { favorite = it }, enabled = !busy); Text("Show in Favorites", modifier = Modifier.padding(top = 12.dp)) }
                 if (revision != state.revision) {
                     Text("The library changed while this editor was open. Reload saved values before saving.")
@@ -88,12 +88,12 @@ internal fun LibraryEditDialog(
 }
 
 @Composable
-private fun CollectionPicker(collections: List<BookmarkCollection>, selected: String?, onSelect: (String) -> Unit, enabled: Boolean) {
+private fun CollectionPicker(collections: List<BookmarkCollection>, selected: String?, onSelect: (String) -> Unit, enabled: Boolean, unfiledIds: Set<String>) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        OutlinedButton(onClick = { expanded = true }, enabled = enabled) { Text("Collection: " + (collections.find { it.id == selected }?.name ?: "Choose…")) }
+        OutlinedButton(onClick = { expanded = true }, enabled = enabled) { Text("Folder: " + (collections.find { it.id == selected }?.folderDisplayName(unfiledIds) ?: "Choose…")) }
         DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
-            collections.forEach { collection -> DropdownMenuItem(onClick = { onSelect(collection.id); expanded = false }) { Text(collection.name) } }
+            collections.forEach { collection -> DropdownMenuItem(onClick = { onSelect(collection.id); expanded = false }) { Text(collection.folderDisplayName(unfiledIds)) } }
         }
     }
 }
@@ -106,24 +106,25 @@ internal fun SafeDeleteCollectionDialog(
     error: String?,
     onDismiss: () -> Unit,
     onConfirm: (String?) -> Unit,
+    unfiledIds: Set<String> = emptySet(),
 ) {
     var destination by remember(collection.id) { mutableStateOf<String?>(null) }
     val choices = collections.filterNot { it.id == collection.id }
     BossAlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("Delete collection ${collection.name}?") },
+        title = { Text("Delete folder ${collection.folderDisplayName(unfiledIds)}?") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("${collection.bookmarks.size} saved bookmarks. Deleting this collection never deletes its bookmarks.")
+                Text("${collection.bookmarks.size} saved bookmarks. Deleting this folder never deletes its bookmarks.")
                 if (collection.bookmarks.isNotEmpty()) {
                     Text("Choose where to move them first.")
-                    CollectionPicker(choices, destination, { destination = it }, !busy)
+                    CollectionPicker(choices, destination, { destination = it }, !busy, unfiledIds)
                 }
-                if (choices.isEmpty()) Text("Keep at least one collection.")
+                if (choices.isEmpty()) Text("Keep at least one folder.")
                 if (error != null) Text(error, color = MaterialTheme.colors.error)
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(destination) }, enabled = !busy && choices.isNotEmpty() && (collection.bookmarks.isEmpty() || destination != null)) { Text("Delete collection") } },
+        confirmButton = { TextButton(onClick = { onConfirm(destination) }, enabled = !busy && choices.isNotEmpty() && (collection.bookmarks.isEmpty() || destination != null)) { Text("Delete folder") } },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
     )
 }
@@ -134,7 +135,7 @@ internal fun LibraryNameDialog(title: String, initial: String, busy: Boolean, er
     BossAlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text(title) },
-        text = { Column { OutlinedTextField(name, { name = it }, label = { Text("Collection name") }, singleLine = true, enabled = !busy); if (error != null) Text(error, color = MaterialTheme.colors.error) } },
+        text = { Column { OutlinedTextField(name, { name = it }, label = { Text("Folder name") }, singleLine = true, enabled = !busy); if (error != null) Text(error, color = MaterialTheme.colors.error) } },
         confirmButton = { TextButton(onClick = { onConfirm(name) }, enabled = !busy && name.isNotBlank()) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
     )

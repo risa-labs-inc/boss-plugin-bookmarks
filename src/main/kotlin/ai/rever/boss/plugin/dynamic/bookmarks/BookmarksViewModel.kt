@@ -243,15 +243,15 @@ class BookmarksViewModel(
 
     fun createCollection(name: String, onSuccess: () -> Unit = {}) {
         if (library == null) { bookmarkManager.createCollection(name); onSuccess(); return }
-        mutate("Collection created", onSuccess) { it.createCollection(name, it.state.value.revision) }
+        mutate("Folder created", onSuccess) { it.createCollection(name, it.state.value.revision) }
     }
     fun deleteCollection(collectionId: String, moveTo: String? = null, onSuccess: () -> Unit = {}) {
         if (library == null) { bookmarkManager.deleteCollection(collectionId); onSuccess(); return }
-        mutate("Collection deleted", onSuccess) { it.deleteCollection(collectionId, moveTo, it.state.value.revision) }
+        mutate("Folder deleted", onSuccess) { it.deleteCollection(collectionId, moveTo, it.state.value.revision) }
     }
     fun renameCollection(collectionId: String, newName: String, expectedRevision: Long? = null, onSuccess: () -> Unit = {}) {
         if (library == null) { bookmarkManager.renameCollection(collectionId, newName); onSuccess(); return }
-        mutate("Collection renamed", onSuccess) { it.renameCollection(collectionId, newName, expectedRevision ?: it.state.value.revision) }
+        mutate("Folder renamed", onSuccess) { it.renameCollection(collectionId, newName, expectedRevision ?: it.state.value.revision) }
     }
 
     // ==================== Workspace Operations ====================

@@ -67,6 +67,10 @@ internal class BookmarkLibraryStore(
                     .copy(revision = (loaded?.revision ?: 0) + 1)
                 fingerprint = disk.commit(snapshot.fingerprint, loaded)
             } else fingerprint = snapshot.fingerprint
+            if (loaded.unfiledCollectionIds == null) {
+                loaded = loaded.copy(unfiledCollectionIds = legacyUnfiledIds(loaded), revision = loaded.revision + 1)
+                fingerprint = disk.commit(fingerprint, loaded)
+            }
             publish(loaded)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
@@ -77,7 +81,7 @@ internal class BookmarkLibraryStore(
     private fun publish(value: LibraryDocument, ready: Boolean = true, error: String? = null) {
         document = value
         mutableCollections.value = value.collections
-        mutableState.value = BookmarkLibraryState(value.collections, value.favoriteBookmarkIds, ready, error, value.revision, value.defaultFavorite)
+        mutableState.value = BookmarkLibraryState(value.collections, value.favoriteBookmarkIds, ready, error, value.revision, value.defaultFavorite, value.unfiledCollectionIds.orEmpty())
     }
 
     private data class Change(val value: LibraryDocument, val result: BookmarkMutationResult = BookmarkMutationResult(true))
@@ -186,7 +190,7 @@ internal class BookmarkLibraryStore(
         require(name.isNotBlank()) { "Enter a collection name." }
         require(current.collections.any { it.id == collectionId }) { "This collection no longer exists." }
         require(current.collections.none { it.id != collectionId && it.name == name.trim() }) { "A collection with this name already exists." }
-        Change(current.copy(collections = current.collections.map { if (it.id == collectionId) it.copy(name = name.trim()) else it }))
+        Change(current.copy(collections = current.collections.map { if (it.id == collectionId) it.copy(name = name.trim()) else it }, unfiledCollectionIds = current.unfiledCollectionIds.orEmpty() - collectionId))
     }
 
     override suspend fun deleteCollection(collectionId: String, moveToCollectionId: String?, expectedRevision: Long) = change(expectedRevision) { current ->

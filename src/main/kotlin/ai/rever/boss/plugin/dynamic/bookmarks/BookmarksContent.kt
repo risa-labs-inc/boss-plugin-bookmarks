@@ -200,7 +200,10 @@ private fun BookmarksPanel(
             .keyedUniquely("ws") { it.id }
     }
 
-    val flatDefault = collections.singleOrNull()?.takeIf { it.name in setOf("Unsorted", "Bookmarks") }
+    val unfiledIds = libraryState?.unfiledCollectionIds.orEmpty()
+    val rootBookmarks = filteredCollections.filter { it.value.id in unfiledIds }
+        .flatMap { entry -> filterBookmarks(entry.value.bookmarks, searchQuery).map { entry.value.id to it } }
+    val visibleFolders = filteredCollections.filterNot { it.value.id in unfiledIds }
 
     // Scrollbar state
     val listState = rememberLazyListState()
@@ -286,41 +289,29 @@ private fun BookmarksPanel(
                     TextButton(onClick = { showNewCollectionDialog = true }) { Text("New folder", maxLines = 1, softWrap = false) }
                 }
             }
-            if (flatDefault != null) {
-                val source = flatDefault
-                val records = filteredCollections.flatMap { filterBookmarks(it.value.bookmarks, searchQuery) }
-                if (records.isEmpty()) item {
-                    EmptyState(Icons.Outlined.Bookmarks, when {
-                        searchQuery.isNotBlank() -> "No matching bookmarks"
-                        favoritesOnly -> "No favorites yet. Star a saved bookmark to add it here."
-                        else -> "No bookmarks yet. Save a tab to keep it here."
-                    })
-                }
-                items(records, key = { "flat:${it.id}" }) { bookmark ->
+            if (rootBookmarks.isEmpty() && visibleFolders.isEmpty()) item {
+                EmptyState(Icons.Outlined.Bookmarks, when {
+                    searchQuery.isNotBlank() -> "No matching bookmarks"
+                    favoritesOnly -> "No favorites yet. Star a saved bookmark to add it here."
+                    else -> "No bookmarks yet. Save a tab to keep it here."
+                })
+            }
+                items(rootBookmarks, key = { "flat:${it.second.id}" }) { (sourceId, bookmark) ->
                     BookmarkItem(
                         bookmark = bookmark,
                         onClick = { viewModel.onBookmarkClick(bookmark, coroutineScope) },
                         contextMenuProvider = contextMenuProvider,
                         activeTabsProvider = activeTabsProvider,
-                        onRename = { bookmarkToRename = bookmark to source.id },
-                        onRemove = { bookmarkToRemove = bookmark to source.id },
-                        onCopy = { bookmarkToCopy = bookmark to source.id },
-                        onMove = { bookmarkToMove = bookmark to source.id },
+                        onRename = { bookmarkToRename = bookmark to sourceId },
+                        onRemove = { bookmarkToRemove = bookmark to sourceId },
+                        onCopy = { bookmarkToCopy = bookmark to sourceId },
+                        onMove = { bookmarkToMove = bookmark to sourceId },
                         favorite = bookmark.id in favoriteIds,
                         onToggleFavorite = { viewModel.setFavorite(bookmark.id, bookmark.id !in favoriteIds) },
                         onOpenNew = { viewModel.openBookmark(bookmark, true) },
                     )
                 }
-            } else {
-                if (filteredCollections.isEmpty()) {
-                    item {
-                        EmptyState(
-                            icon = Icons.Outlined.FolderOpen,
-                            message = when { searchQuery.isNotBlank() -> "No matching bookmarks"; favoritesOnly -> "No favorites yet. Star a saved bookmark to add it here."; else -> "No collections yet" }
-                        )
-                    }
-                } else {
-                    items(filteredCollections, key = { it.key }) { (itemKey, collection) ->
+                    items(visibleFolders, key = { it.key }) { (itemKey, collection) ->
                         CollectionItem(
                             collection = collection,
                             sourceCollection = collections.firstOrNull { it.id == collection.id } ?: collection,
@@ -346,8 +337,6 @@ private fun BookmarksPanel(
                             onOpenNew = { viewModel.openBookmark(it, true) },
                         )
                     }
-                }
-            }
 
             } else {
             // Favorite Workspaces section
@@ -483,7 +472,7 @@ private fun BookmarksPanel(
 
     // Dialogs
     if (showNewCollectionDialog) {
-        LibraryNameDialog("New Collection", "", busy, errorMessage,
+        LibraryNameDialog("New Folder", "", busy, errorMessage,
             onDismiss = { showNewCollectionDialog = false },
             onConfirm = { name -> viewModel.createCollection(name) { showNewCollectionDialog = false } },
         )
@@ -502,6 +491,7 @@ private fun BookmarksPanel(
     collectionToDelete?.let { collection ->
         SafeDeleteCollectionDialog(
             collection, collections, busy, errorMessage,
+            unfiledIds = unfiledIds,
             onDismiss = { collectionToDelete = null },
             onConfirm = { destination -> viewModel.deleteCollection(collection.id, destination) { collectionToDelete = null } },
         )
@@ -509,7 +499,7 @@ private fun BookmarksPanel(
 
     collectionToRename?.let { collection ->
         val revision = remember(collection.id) { libraryState?.revision }
-        LibraryNameDialog("Rename Collection", collection.name, busy, errorMessage,
+        LibraryNameDialog("Rename Folder", collection.name, busy, errorMessage,
             onDismiss = { collectionToRename = null },
             onConfirm = { name -> viewModel.renameCollection(collection.id, name, revision) { collectionToRename = null } },
         )
@@ -586,6 +576,7 @@ private fun BookmarksPanel(
     bookmarkToCopy?.let { (bookmark, fromCollectionId) ->
         CollectionSelectionDialog(
             title = "Copy Bookmark To",
+            unfiledIds = unfiledIds,
             collections = collections.filter { !it.isFavorite && it.id != fromCollectionId },
             onDismiss = { bookmarkToCopy = null },
             onSelect = { targetCollection ->
@@ -597,6 +588,7 @@ private fun BookmarksPanel(
     bookmarkToMove?.let { (bookmark, fromCollectionId) ->
         CollectionSelectionDialog(
             title = "Move Bookmark To",
+            unfiledIds = unfiledIds,
             collections = collections.filter { it.id != fromCollectionId },
             onDismiss = { bookmarkToMove = null },
             onSelect = { targetCollection ->
@@ -696,8 +688,8 @@ private fun BookmarkItem(
         ContextMenuItemData("", null, isDivider = true),
         ContextMenuItemData("Delete Bookmark", Icons.Outlined.Delete, onClick = { onRemove() }),
         ContextMenuItemData("", null, isDivider = true),
-        ContextMenuItemData("Copy to Collection", Icons.Outlined.ContentCopy, onClick = { onCopy() }),
-        ContextMenuItemData("Move to Collection", Icons.AutoMirrored.Outlined.DriveFileMove, onClick = { onMove() })
+        ContextMenuItemData("Copy to Folder", Icons.Outlined.ContentCopy, onClick = { onCopy() }),
+        ContextMenuItemData("Move to Folder", Icons.AutoMirrored.Outlined.DriveFileMove, onClick = { onMove() })
     )
 
     val baseModifier = Modifier
@@ -815,15 +807,15 @@ private fun CollectionItem(
     val clipboard = LocalClipboardManager.current
     val collectionMenuItems = buildList {
         if (!collection.isFavorite) {
-            add(ContextMenuItemData("Rename Collection", Icons.Outlined.Edit, onClick = { onRename() }))
+            add(ContextMenuItemData("Rename Folder", Icons.Outlined.Edit, onClick = { onRename() }))
         }
-        add(ContextMenuItemData("Copy Collection JSON", Icons.Outlined.ContentCopy, onClick = {
+        add(ContextMenuItemData("Copy Folder JSON", Icons.Outlined.ContentCopy, onClick = {
             val json = Json { prettyPrint = true; encodeDefaults = true }
             clipboard.setText(AnnotatedString(json.encodeToString(ListSerializer(BookmarkCollection.serializer()), listOf(sourceCollection))))
         }))
         if (!collection.isFavorite) {
             add(ContextMenuItemData("", null, isDivider = true))
-            add(ContextMenuItemData("Delete Collection", Icons.Outlined.Delete, onClick = { onDelete() }))
+            add(ContextMenuItemData("Delete Folder", Icons.Outlined.Delete, onClick = { onDelete() }))
         }
     }
 
@@ -876,7 +868,7 @@ private fun CollectionItem(
                 Spacer(modifier = Modifier.width(6.dp))
 
                 Text(
-                    text = collection.name,
+                    text = collection.folderDisplayName(),
                     fontSize = 13.sp,
                     color = LightGrayText,
                     maxLines = 1,
@@ -901,7 +893,7 @@ private fun CollectionItem(
                         .padding(horizontal = 44.dp, vertical = 8.dp)
                 ) {
                     Text(
-                        text = if (searchQuery.isBlank()) "No bookmarks in this collection" else "No matching bookmarks",
+                        text = if (searchQuery.isBlank()) "No bookmarks in this folder" else "No matching bookmarks",
                         fontSize = 12.sp,
                         color = MutedGrayText,
                         fontStyle = FontStyle.Italic
@@ -1348,12 +1340,12 @@ private fun NewCollectionDialog(
 
     BossAlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("New Collection", color = LightGrayText) },
+        title = { Text("New Folder", color = LightGrayText) },
         text = {
             TextField(
                 value = name,
                 onValueChange = { name = it },
-                placeholder = { Text("Collection name") },
+                placeholder = { Text("Folder name") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 colors = TextFieldDefaults.textFieldColors(
@@ -1429,10 +1421,10 @@ private fun DeleteCollectionDialog(
 ) {
     BossAlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Delete Collection?", color = LightGrayText) },
+        title = { Text("Delete Folder?", color = LightGrayText) },
         text = {
             Text(
-                "Collection '${collection.name}' and all its bookmarks will be permanently deleted. " +
+                "Folder '${collection.folderDisplayName()}' and all its bookmarks will be permanently deleted. " +
                 "This action cannot be undone.",
                 color = MutedGrayText
             )
@@ -1465,12 +1457,12 @@ private fun RenameCollectionDialog(
 
     BossAlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Rename Collection", color = LightGrayText) },
+        title = { Text("Rename Folder", color = LightGrayText) },
         text = {
             TextField(
                 value = name,
                 onValueChange = { name = it },
-                placeholder = { Text("Collection name") },
+                placeholder = { Text("Folder name") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 colors = TextFieldDefaults.textFieldColors(
@@ -1721,6 +1713,7 @@ private fun ConfirmRemoveBookmarkDialog(
 @Composable
 private fun CollectionSelectionDialog(
     title: String,
+    unfiledIds: Set<String>,
     collections: List<BookmarkCollection>,
     onDismiss: () -> Unit,
     onSelect: (BookmarkCollection) -> Unit
@@ -1732,7 +1725,7 @@ private fun CollectionSelectionDialog(
             Column(modifier = Modifier.fillMaxWidth()) {
                 if (collections.isEmpty()) {
                     Text(
-                        "No other collections available",
+                        "No other folders available",
                         color = MutedGrayText,
                         fontSize = 13.sp
                     )
@@ -1753,7 +1746,7 @@ private fun CollectionSelectionDialog(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = collection.name,
+                                text = collection.folderDisplayName(unfiledIds),
                                 fontSize = 13.sp,
                                 color = LightGrayText
                             )

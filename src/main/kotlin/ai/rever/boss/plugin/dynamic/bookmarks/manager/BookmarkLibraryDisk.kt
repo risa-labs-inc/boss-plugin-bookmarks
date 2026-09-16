@@ -26,6 +26,7 @@ internal data class DeletedLibraryBookmark(
 
 @Serializable
 internal data class LibraryDocument(
+    val unfiledCollectionIds: Set<String>? = null,
     val schemaVersion: Int = 1,
     val revision: Long = 0,
     val collections: List<BookmarkCollection> = emptyList(),

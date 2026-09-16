@@ -174,4 +174,24 @@ class BookmarkLibraryStoreTest {
         } finally { store.close(); dir.deleteRecursively() }
     }
 
+    @Test fun `unfiled identity uses provenance and never user folder names`() = runBlocking {
+        val dir = Files.createTempDirectory("library-unfiled").toFile()
+        val disk = BookmarkLibraryDisk(dir.path)
+        val legacy = BookmarkCollection(id = "original-favorites", name = "Favorites", isFavorite = true)
+        val user = BookmarkCollection(id = "user-unsorted", name = "Unsorted")
+        val migrated = importLegacyLibrary(null, listOf(legacy, user), null)
+        disk.commit(null, migrated.copy(unfiledCollectionIds = null))
+        val store = BookmarkLibraryStore(disk, false)
+        try {
+            ready(store)
+            assertEquals(setOf(legacy.id), store.state.value.unfiledCollectionIds)
+            val created = store.createCollection("Bookmarks", store.state.value.revision)
+            assertTrue(created.success)
+            assertFalse(created.collectionId in store.state.value.unfiledCollectionIds)
+            store.close()
+            val restarted = BookmarkLibraryStore(disk, false)
+            try { ready(restarted); assertEquals(setOf(legacy.id), restarted.state.value.unfiledCollectionIds) } finally { restarted.close() }
+        } finally { store.close(); dir.deleteRecursively() }
+    }
+
 }

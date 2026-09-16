@@ -41,10 +41,19 @@ class BookmarkLibraryDialogTest {
         compose.setContent { BossTheme {
             SafeDeleteCollectionDialog(collection, listOf(collection, BookmarkCollection(id = "two", name = "Other")), false, null, {}, { selected = it })
         } }
-        compose.onNodeWithText("Delete collection").assertIsNotEnabled()
-        compose.onNodeWithText("Collection: Choose…").performClick()
+        compose.onNodeWithText("Delete folder").assertIsNotEnabled()
+        compose.onNodeWithText("Folder: Choose…").performClick()
         compose.onNodeWithText("Other").performClick()
-        compose.onNodeWithText("Delete collection").performClick()
+        compose.onNodeWithText("Delete folder").performClick()
         compose.runOnIdle { assertEquals("two", selected) }
     }
+    @Test fun `internal default destination is displayed as no folder`() {
+        val default = collection.copy(name = "Unsorted")
+        compose.setContent { BossTheme {
+            LibraryEditDialog(bookmark, default.id, BookmarkLibraryState(collections = listOf(default), ready = true, unfiledCollectionIds = setOf(default.id)), false, null, {}, { _, _, _, _, _ -> })
+        } }
+        compose.onNodeWithText("Folder: No folder").assertExists()
+        compose.onNodeWithText("Unsorted").assertDoesNotExist()
+    }
+
 }
