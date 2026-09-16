@@ -121,7 +121,8 @@ class BookmarksViewModel(
                 splitView.getActiveTabsComponent()?.addTerminalTab(
                     id = "terminal-${Random.nextLong()}",
                     title = tabConfig.title,
-                    workingDirectory = null
+                    workingDirectory = tabConfig.workingDirectory,
+                    initialCommand = tabConfig.initialCommand
                 )
             }
         }

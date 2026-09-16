@@ -1,5 +1,9 @@
 package ai.rever.boss.plugin.dynamic.bookmarks.manager
 
+import ai.rever.boss.plugin.api.SplitViewOperations
+import ai.rever.boss.plugin.api.TabsComponent
+import ai.rever.boss.plugin.dynamic.bookmarks.BookmarksViewModel
+import java.lang.reflect.Proxy
 import ai.rever.boss.plugin.bookmark.Bookmark
 import ai.rever.boss.plugin.bookmark.BookmarkCollection
 import ai.rever.boss.plugin.workspace.TabConfig
@@ -177,5 +181,46 @@ class BookmarkManagerRenameTest {
 
         assertTrue(manager.isTabBookmarked(build))
         assertNull(manager.findBookmarkForTab(TabConfig(type = "terminal", title = "deploy")))
+    }
+
+    @Test
+    fun `terminal same titles do not alias different launch targets`() {
+        val first = TabConfig(type = "terminal", title = "BossProjects", workingDirectory = "/work/first", initialCommand = "run first")
+        val second = first.copy(workingDirectory = "/work/second")
+        val savedFirst = store(first)
+        assertNull(manager.findBookmarkForTab(second))
+        assertNull(manager.findBookmarkForTab(first.copy(initialCommand = "run second")))
+        val savedSecond = store(second)
+        assertEquals(savedFirst, manager.findBookmarkForTab(first.copy(title = "changed by shell")))
+        manager.removeBookmark(savedSecond.first, savedSecond.second)
+        assertEquals(savedFirst, manager.findBookmarkForTab(first))
+        assertNull(manager.findBookmarkForTab(second))
+    }
+
+    @Test
+    fun `legacy terminal bookmarks are not wildcards for explicit launch targets`() {
+        val legacy = TabConfig(type = "terminal", title = "Terminal")
+        val saved = store(legacy)
+        assertEquals(saved, manager.findBookmarkForTab(legacy))
+        assertEquals(saved, manager.findBookmarkForTab(legacy.copy(workingDirectory = "", initialCommand = "")))
+        assertNull(manager.findBookmarkForTab(legacy.copy(workingDirectory = "/work")))
+        assertNull(manager.findBookmarkForTab(legacy.copy(initialCommand = "run")))
+    }
+
+    @Test
+    fun `opening a terminal bookmark forwards saved launch fields to the host`() {
+        var launch: List<Any?>? = null
+        val tabs = Proxy.newProxyInstance(TabsComponent::class.java.classLoader, arrayOf(TabsComponent::class.java)) { _, method, args ->
+            check(method.name == "addTerminalTab")
+            launch = args!!.toList()
+            null
+        } as TabsComponent
+        val split = Proxy.newProxyInstance(SplitViewOperations::class.java.classLoader, arrayOf(SplitViewOperations::class.java)) { _, method, _ ->
+            check(method.name == "getActiveTabsComponent")
+            tabs
+        } as SplitViewOperations
+        val model = BookmarksViewModel(manager, null, split)
+        model.onWorkspaceTabClick(TabConfig(type = "terminal", title = "Server", workingDirectory = "/work/server", initialCommand = "run server"))
+        assertEquals(listOf("Server", "/work/server", "run server"), assertNotNull(launch).drop(1))
     }
 }
