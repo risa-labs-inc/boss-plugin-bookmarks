@@ -138,7 +138,6 @@ private fun BookmarksPanel(
     // Section expansion states
     var workspaceView by remember { mutableStateOf(false) }
     var favoritesOnly by remember { mutableStateOf(false) }
-    var collectionsExpanded by remember { mutableStateOf(true) }
     var allWorkspacesExpanded by remember { mutableStateOf(false) }
     var favoriteWorkspacesExpanded by remember { mutableStateOf(true) }
 
@@ -201,6 +200,8 @@ private fun BookmarksPanel(
             .keyedUniquely("ws") { it.id }
     }
 
+    val flatDefault = collections.singleOrNull()?.takeIf { it.name in setOf("Unsorted", "Bookmarks") }
+
     // Scrollbar state
     val listState = rememberLazyListState()
 
@@ -227,8 +228,8 @@ private fun BookmarksPanel(
             .background(DarkBackground)
     ) {
         TabRow(selectedTabIndex = if (workspaceView) 1 else 0, backgroundColor = DarkBackground, contentColor = AccentColor) {
-            Tab(selected = !workspaceView, selectedContentColor = AccentColor, unselectedContentColor = MutedGrayText, onClick = { workspaceView = false; viewModel.updateSearchQuery("") }, modifier = Modifier.testTag("bookmarks-view"), text = { Text("Bookmarks") })
-            Tab(selected = workspaceView, selectedContentColor = AccentColor, unselectedContentColor = MutedGrayText, onClick = { workspaceView = true; viewModel.updateSearchQuery("") }, modifier = Modifier.testTag("workspaces-view"), text = { Text("Workspaces") })
+            Tab(selected = !workspaceView, selectedContentColor = AccentColor, unselectedContentColor = MutedGrayText, onClick = { workspaceView = false; viewModel.updateSearchQuery("") }, modifier = Modifier.height(40.dp).testTag("bookmarks-view")) { Text("Bookmarks", modifier = Modifier.padding(horizontal = 4.dp), fontSize = 12.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
+            Tab(selected = workspaceView, selectedContentColor = AccentColor, unselectedContentColor = MutedGrayText, onClick = { workspaceView = true; viewModel.updateSearchQuery("") }, modifier = Modifier.height(40.dp).testTag("workspaces-view")) { Text("Workspaces", modifier = Modifier.padding(horizontal = 4.dp), fontSize = 12.sp, maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis) }
         }
         if (!workspaceView) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { favoritesOnly = false }, modifier = Modifier.testTag("all-filter")) { Text("All (${collections.sumOf { it.bookmarks.size }})", color = if (!favoritesOnly) AccentColor else MutedGrayText) }
@@ -280,39 +281,37 @@ private fun BookmarksPanel(
                 )
         ) {
             if (!workspaceView) {
-            // One collection tree, optionally filtered to favorite records.
             item {
-                Spacer(modifier = Modifier.height(8.dp))
-                CollapsibleSection(
-                    title = "Collections",
-                    isExpanded = collectionsExpanded,
-                    onToggle = { collectionsExpanded = !collectionsExpanded },
-                    icon = Icons.Outlined.FolderOpen,
-                    contextMenuProvider = contextMenuProvider,
-                    trailingAction = {
-                        IconButton(
-                            onClick = { showNewCollectionDialog = true },
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.Add,
-                                contentDescription = "New Collection",
-                                tint = AccentColor,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    },
-                    contextMenuItems = listOf(
-                        ContextMenuItemData("New Collection", Icons.Outlined.CreateNewFolder, onClick = {
-                            showNewCollectionDialog = true
-                        })
-                    ) + if (favoritesOnly && favoriteIds.isNotEmpty()) listOf(
-                        ContextMenuItemData("Clear All Favorites", Icons.Outlined.DeleteSweep, onClick = { showClearFavoritesDialog = true })
-                    ) else emptyList()
-                )
+                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { showNewCollectionDialog = true }) { Text("New folder", maxLines = 1, softWrap = false) }
+                }
             }
-
-            if (collectionsExpanded) {
+            if (flatDefault != null) {
+                val source = flatDefault
+                val records = filteredCollections.flatMap { filterBookmarks(it.value.bookmarks, searchQuery) }
+                if (records.isEmpty()) item {
+                    EmptyState(Icons.Outlined.Bookmarks, when {
+                        searchQuery.isNotBlank() -> "No matching bookmarks"
+                        favoritesOnly -> "No favorites yet. Star a saved bookmark to add it here."
+                        else -> "No bookmarks yet. Save a tab to keep it here."
+                    })
+                }
+                items(records, key = { "flat:${it.id}" }) { bookmark ->
+                    BookmarkItem(
+                        bookmark = bookmark,
+                        onClick = { viewModel.onBookmarkClick(bookmark, coroutineScope) },
+                        contextMenuProvider = contextMenuProvider,
+                        activeTabsProvider = activeTabsProvider,
+                        onRename = { bookmarkToRename = bookmark to source.id },
+                        onRemove = { bookmarkToRemove = bookmark to source.id },
+                        onCopy = { bookmarkToCopy = bookmark to source.id },
+                        onMove = { bookmarkToMove = bookmark to source.id },
+                        favorite = bookmark.id in favoriteIds,
+                        onToggleFavorite = { viewModel.setFavorite(bookmark.id, bookmark.id !in favoriteIds) },
+                        onOpenNew = { viewModel.openBookmark(bookmark, true) },
+                    )
+                }
+            } else {
                 if (filteredCollections.isEmpty()) {
                     item {
                         EmptyState(
