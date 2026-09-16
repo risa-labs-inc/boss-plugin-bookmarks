@@ -8,6 +8,14 @@ import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
 import ai.rever.boss.plugin.ui.BossTheme
 import ai.rever.boss.plugin.workspace.TabConfig
 import androidx.compose.ui.test.*
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.asSkiaBitmap
+import org.jetbrains.skia.Image
+import java.io.File
 import androidx.compose.ui.test.junit4.createComposeRule
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -30,13 +38,33 @@ class BookmarkLibraryPanelTest {
             val saved = library.saveBookmark(BookmarkSaveRequest(snapshot.collections.first().id, TabConfig(type = "browser", title = "My page", url = "https://example.com"), "My page", false, snapshot.revision))
             assertTrue(saved.success)
             val viewModel = BookmarksViewModel(spaces, null, null, library)
-            compose.setContent { BossTheme { BookmarksContent(viewModel, spaces, null, null, null) } }
-            compose.onNodeWithText("Bookmarks").performClick()
+            compose.setContent { BossTheme { Box(Modifier.size(320.dp, 600.dp).testTag("panel-capture")) { BookmarksContent(viewModel, spaces, null, null, null) } } }
+            compose.onAllNodesWithText("Bookmarks").onLast().performClick()
             compose.onNodeWithContentDescription("Show in Favorites").performClick()
             compose.waitUntil(5000) { saved.bookmarkId in library.state.value.favoriteBookmarkIds }
-            compose.onAllNodesWithContentDescription("Remove from Favorites").onFirst().performClick()
+            compose.onAllNodesWithText("My page").assertCountEquals(1)
+            val screenshotPath = System.getenv("BOSS_BOOKMARK_SCREENSHOT")
+            if (screenshotPath != null) {
+                val bitmap = compose.onNodeWithTag("panel-capture").captureToImage().asSkiaBitmap()
+                Image.makeFromBitmap(bitmap).encodeToData()?.let { File(screenshotPath).writeBytes(it.bytes) }
+            }
+            compose.onNodeWithText("Favorite Workspaces").assertDoesNotExist()
+            compose.onNodeWithTag("favorites-filter").performClick()
+            compose.onAllNodesWithText("My page").assertCountEquals(1)
+            compose.onNodeWithContentDescription("Remove from Favorites").performClick()
             compose.waitUntil(5000) { library.state.value.favoriteBookmarkIds.isEmpty() }
+            compose.onNodeWithText("My page").assertDoesNotExist()
+            compose.onNodeWithTag("all-filter").performClick()
+            compose.onAllNodesWithText("My page").assertCountEquals(1)
+            compose.onNodeWithTag("workspaces-view").performClick()
+            compose.onNodeWithText("Favorite Workspaces").assertExists()
+            compose.onNodeWithText("My page").assertDoesNotExist()
+            compose.onNodeWithTag("favorites-filter").assertDoesNotExist()
+            compose.onNodeWithTag("bookmarks-view").performClick()
+            compose.onNodeWithText("Favorite Workspaces").assertDoesNotExist()
+            compose.onAllNodesWithText("My page").assertCountEquals(1)
             assertEquals(1, library.state.value.collections.flatMap { it.bookmarks }.size)
+            viewModel.close()
         } finally { library.close(); spaces.close(); directory.deleteRecursively() }
     }
 }

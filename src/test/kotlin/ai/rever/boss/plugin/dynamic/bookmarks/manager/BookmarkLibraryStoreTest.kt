@@ -103,6 +103,12 @@ class BookmarkLibraryStoreTest {
             assertTrue(store.saveBookmark(request(store, title = "Copy").copy(allowCopy = true)).success)
             val copy = store.state.value.collections.single().bookmarks.last()
             assertEquals(record.notes, copy.notes); assertEquals(record.tags, copy.tags); assertEquals(record.targetWorkspaces, copy.targetWorkspaces)
+            assertTrue(store.saveBookmark(request(store, title = "Original renamed again").copy(bookmarkId = changed.id)).success)
+            assertTrue(store.saveBookmark(request(store, title = "Copy renamed").copy(bookmarkId = copy.id)).success)
+            val renamed = store.state.value.collections.single().bookmarks
+            assertEquals(setOf(changed.id, copy.id), renamed.map { it.id }.toSet())
+            assertTrue(renamed.all { it.notes == record.notes && it.tags == record.tags && it.createdAt == record.createdAt })
+            assertEquals(setOf(changed.id, copy.id), store.state.value.favoriteBookmarkIds)
         } finally { store.close(); dir.deleteRecursively() }
     }
 

@@ -109,7 +109,7 @@ internal class BookmarkLibraryStore(
         val records = current.collections.flatMap { it.bookmarks }
         val existing = request.bookmarkId?.let { id -> records.find { it.id == id } ?: error("This bookmark no longer exists.") }
         val duplicate = records.find { it.id != existing?.id && sameTarget(it.tabConfig, target) }
-        if (duplicate != null && !request.allowCopy) {
+        if (duplicate != null && !request.allowCopy && (existing == null || !sameTarget(existing.tabConfig, target))) {
             Change(current, BookmarkMutationResult(false, duplicateBookmarkId = duplicate.id, message = "This destination is already saved. Edit it or deliberately save a copy."))
         } else {
             val template = existing ?: duplicate?.takeIf { request.allowCopy }

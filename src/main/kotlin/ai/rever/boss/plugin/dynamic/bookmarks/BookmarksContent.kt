@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import kotlinx.serialization.json.Json
@@ -135,7 +136,8 @@ private fun BookmarksPanel(
     val coroutineScope = rememberCoroutineScope()
 
     // Section expansion states
-    var favoritesExpanded by remember { mutableStateOf(true) }
+    var workspaceView by remember { mutableStateOf(false) }
+    var favoritesOnly by remember { mutableStateOf(false) }
     var collectionsExpanded by remember { mutableStateOf(true) }
     var allWorkspacesExpanded by remember { mutableStateOf(false) }
     var favoriteWorkspacesExpanded by remember { mutableStateOf(true) }
@@ -179,12 +181,13 @@ private fun BookmarksPanel(
     // Each list is paired with LazyColumn item keys up front — see [keyedUniquely]
     // for why the keys cannot be `it.id` on its own.
     //
-    // Favorites are excluded here rather than at the call site: they render in
-    // their own section, from filteredFavorites.
-    val filteredCollections = remember(collections, searchQuery) {
-        filterCollections(collections, searchQuery)
-            .filter { libraryState != null || !it.isFavorite }
-            .keyedUniquely("coll") { it.id }
+    val favoriteIds = libraryState?.favoriteBookmarkIds
+        ?: collections.filter { it.isFavorite }.flatMap { it.bookmarks }.map { it.id }.toSet()
+    val filteredCollections = remember(collections, searchQuery, favoriteIds, favoritesOnly) {
+        val visible = if (favoritesOnly) collections.map { collection ->
+            collection.copy(bookmarks = collection.bookmarks.filter { it.id in favoriteIds })
+        }.filter { it.bookmarks.isNotEmpty() } else collections
+        filterCollections(visible, searchQuery).keyedUniquely("coll") { it.id }
     }
     val filteredFavoriteWorkspaces = remember(favoriteWorkspaces, workspaces, searchQuery) {
         val favoriteWorkspacesList = favoriteWorkspaces.mapNotNull { fav ->
@@ -196,18 +199,6 @@ private fun BookmarksPanel(
     val filteredAllWorkspaces = remember(workspaces, searchQuery) {
         filterWorkspaces(workspaces, searchQuery) { viewModel.buildTabStructure(it) }
             .keyedUniquely("ws") { it.id }
-    }
-
-    // Filter favorites collection bookmarks
-    val favoritesCollection = if (libraryState != null) BookmarkCollection(
-        id = "sidebar-favorites", name = "Favorites", bookmarks = collections.flatMap { it.bookmarks }.filter { it.id in libraryState.favoriteBookmarkIds },
-    ) else collections.find { it.isFavorite }
-    fun collectionFor(bookmark: Bookmark): String = collections.firstOrNull { c -> c.bookmarks.any { it.id == bookmark.id } }?.id.orEmpty()
-    val filteredFavorites = remember(favoritesCollection?.bookmarks, searchQuery) {
-        favoritesCollection
-            ?.let { filterBookmarks(it.bookmarks, searchQuery) }
-            ?.keyedUniquely("fav") { it.id }
-            ?: emptyList()
     }
 
     // Scrollbar state
@@ -235,6 +226,14 @@ private fun BookmarksPanel(
             .fillMaxSize()
             .background(DarkBackground)
     ) {
+        TabRow(selectedTabIndex = if (workspaceView) 1 else 0, backgroundColor = DarkBackground, contentColor = AccentColor) {
+            Tab(selected = !workspaceView, selectedContentColor = AccentColor, unselectedContentColor = MutedGrayText, onClick = { workspaceView = false; viewModel.updateSearchQuery("") }, modifier = Modifier.testTag("bookmarks-view"), text = { Text("Bookmarks") })
+            Tab(selected = workspaceView, selectedContentColor = AccentColor, unselectedContentColor = MutedGrayText, onClick = { workspaceView = true; viewModel.updateSearchQuery("") }, modifier = Modifier.testTag("workspaces-view"), text = { Text("Workspaces") })
+        }
+        if (!workspaceView) Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { favoritesOnly = false }, modifier = Modifier.testTag("all-filter")) { Text("All (${collections.sumOf { it.bookmarks.size }})", color = if (!favoritesOnly) AccentColor else MutedGrayText) }
+            TextButton(onClick = { favoritesOnly = true }, modifier = Modifier.testTag("favorites-filter")) { Text("Favorites (${favoriteIds.size})", color = if (favoritesOnly) AccentColor else MutedGrayText) }
+        }
         // Search bar
         Row(
             modifier = Modifier
@@ -244,7 +243,8 @@ private fun BookmarksPanel(
         ) {
             BookmarkSearchBar(
                 searchQuery = searchQuery,
-                onSearchQueryChange = { viewModel.updateSearchQuery(it) }
+                onSearchQueryChange = { viewModel.updateSearchQuery(it) },
+                placeholder = if (workspaceView) "Search workspaces…" else "Search bookmarks…"
             )
         }
 
@@ -279,58 +279,12 @@ private fun BookmarksPanel(
                     config = getPanelScrollbarConfig()
                 )
         ) {
-            // Favorites section
-            if (favoritesCollection != null) {
-                item {
-                    CollapsibleSection(
-                        title = "Favorites (${favoritesCollection.bookmarks.size})",
-                        isExpanded = favoritesExpanded,
-                        onToggle = { favoritesExpanded = !favoritesExpanded },
-                        icon = Icons.Outlined.Star,
-                        contextMenuProvider = contextMenuProvider,
-                        contextMenuItems = buildList {
-                            if (favoritesCollection.bookmarks.isNotEmpty()) {
-                                add(ContextMenuItemData("Clear All Favorites", Icons.Outlined.DeleteSweep, onClick = {
-                                    showClearFavoritesDialog = true
-                                }))
-                            }
-                        }
-                    )
-                }
-
-                if (favoritesExpanded) {
-                    if (filteredFavorites.isEmpty()) {
-                        item {
-                            EmptyState(
-                                icon = Icons.Outlined.Star,
-                                message = if (searchQuery.isBlank()) "No favorites yet" else "No matching favorites"
-                            )
-                        }
-                    } else {
-                        items(filteredFavorites, key = { it.key }) { (_, bookmark) ->
-                            BookmarkItem(
-                                bookmark = bookmark,
-                                onClick = { viewModel.onBookmarkClick(bookmark, coroutineScope) },
-                                contextMenuProvider = contextMenuProvider,
-                                activeTabsProvider = activeTabsProvider,
-                                onRename = { bookmarkToRename = Pair(bookmark, collectionFor(bookmark)) },
-                                onRemove = { bookmarkToRemove = Pair(bookmark, collectionFor(bookmark)) },
-                                onCopy = { bookmarkToCopy = Pair(bookmark, collectionFor(bookmark)) },
-                                onMove = { bookmarkToMove = Pair(bookmark, collectionFor(bookmark)) },
-                                favorite = true,
-                                onToggleFavorite = { viewModel.setFavorite(bookmark.id, false) },
-                                onOpenNew = { viewModel.openBookmark(bookmark, true) },
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Collections section (all non-favorite collections)
+            if (!workspaceView) {
+            // One collection tree, optionally filtered to favorite records.
             item {
                 Spacer(modifier = Modifier.height(8.dp))
                 CollapsibleSection(
-                    title = "All Bookmarks",
+                    title = "Collections",
                     isExpanded = collectionsExpanded,
                     onToggle = { collectionsExpanded = !collectionsExpanded },
                     icon = Icons.Outlined.FolderOpen,
@@ -352,7 +306,9 @@ private fun BookmarksPanel(
                         ContextMenuItemData("New Collection", Icons.Outlined.CreateNewFolder, onClick = {
                             showNewCollectionDialog = true
                         })
-                    )
+                    ) + if (favoritesOnly && favoriteIds.isNotEmpty()) listOf(
+                        ContextMenuItemData("Clear All Favorites", Icons.Outlined.DeleteSweep, onClick = { showClearFavoritesDialog = true })
+                    ) else emptyList()
                 )
             }
 
@@ -361,17 +317,18 @@ private fun BookmarksPanel(
                     item {
                         EmptyState(
                             icon = Icons.Outlined.FolderOpen,
-                            message = if (searchQuery.isBlank()) "No collections yet" else "No matching collections"
+                            message = when { searchQuery.isNotBlank() -> "No matching bookmarks"; favoritesOnly -> "No favorites yet. Star a saved bookmark to add it here."; else -> "No collections yet" }
                         )
                     }
                 } else {
                     items(filteredCollections, key = { it.key }) { (itemKey, collection) ->
                         CollectionItem(
                             collection = collection,
+                            sourceCollection = collections.firstOrNull { it.id == collection.id } ?: collection,
                             // Tracked by item key, not collection id: should two
                             // collections ever share an id, keying on it would
                             // expand and collapse them together.
-                            isExpanded = expandedCollections.contains(itemKey) || searchQuery.isNotBlank(),
+                            isExpanded = expandedCollections.contains(itemKey) || searchQuery.isNotBlank() || favoritesOnly,
                             onToggleExpand = { toggleCollectionExpansion(itemKey) },
                             onBookmarkClick = { bookmark ->
                                 viewModel.onBookmarkClick(bookmark, coroutineScope)
@@ -379,20 +336,21 @@ private fun BookmarksPanel(
                             searchQuery = searchQuery,
                             contextMenuProvider = contextMenuProvider,
                             activeTabsProvider = activeTabsProvider,
-                            onRename = { collectionToRename = collection },
-                            onDelete = { collectionToDelete = collection },
+                            onRename = { collectionToRename = collections.firstOrNull { it.id == collection.id } },
+                            onDelete = { collectionToDelete = collections.firstOrNull { it.id == collection.id } },
                             onBookmarkRename = { bookmark -> bookmarkToRename = Pair(bookmark, collection.id) },
                             onBookmarkRemove = { bookmark -> bookmarkToRemove = Pair(bookmark, collection.id) },
                             onBookmarkCopy = { bookmark -> bookmarkToCopy = Pair(bookmark, collection.id) },
                             onBookmarkMove = { bookmark -> bookmarkToMove = Pair(bookmark, collection.id) },
-                            favoriteIds = libraryState?.favoriteBookmarkIds.orEmpty(),
-                            onToggleFavorite = { viewModel.setFavorite(it.id, it.id !in libraryState?.favoriteBookmarkIds.orEmpty()) },
+                            favoriteIds = favoriteIds,
+                            onToggleFavorite = { viewModel.setFavorite(it.id, it.id !in favoriteIds) },
                             onOpenNew = { viewModel.openBookmark(it, true) },
                         )
                     }
                 }
             }
 
+            } else {
             // Favorite Workspaces section
             item {
                 Spacer(modifier = Modifier.height(8.dp))
@@ -516,6 +474,7 @@ private fun BookmarksPanel(
                 }
             }
 
+            }
             // Bottom spacer
             item {
                 Spacer(modifier = Modifier.height(16.dp))
@@ -833,6 +792,7 @@ private fun BookmarkIcon(
 @Composable
 private fun CollectionItem(
     collection: BookmarkCollection,
+    sourceCollection: BookmarkCollection = collection,
     isExpanded: Boolean,
     onToggleExpand: () -> Unit,
     onBookmarkClick: (Bookmark) -> Unit,
@@ -860,7 +820,7 @@ private fun CollectionItem(
         }
         add(ContextMenuItemData("Copy Collection JSON", Icons.Outlined.ContentCopy, onClick = {
             val json = Json { prettyPrint = true; encodeDefaults = true }
-            clipboard.setText(AnnotatedString(json.encodeToString(ListSerializer(BookmarkCollection.serializer()), listOf(collection))))
+            clipboard.setText(AnnotatedString(json.encodeToString(ListSerializer(BookmarkCollection.serializer()), listOf(sourceCollection))))
         }))
         if (!collection.isFavorite) {
             add(ContextMenuItemData("", null, isDivider = true))
@@ -1238,7 +1198,8 @@ private fun WorkspaceTabItem(
 private fun BookmarkSearchBar(
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    placeholder: String = "Search bookmarks…"
 ) {
     BasicTextField(
         value = searchQuery,
@@ -1279,7 +1240,7 @@ private fun BookmarkSearchBar(
                 Box(modifier = Modifier.weight(1f)) {
                     if (searchQuery.isEmpty()) {
                         Text(
-                            "Search bookmarks, collections, workspaces...",
+                            placeholder,
                             style = MaterialTheme.typography.body2,
                             color = BossThemeColors.TextSecondary,
                             fontSize = 12.sp
@@ -1317,8 +1278,8 @@ private fun EmptyState(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(24.dp),
-        horizontalArrangement = Arrangement.Center,
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.Start,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
