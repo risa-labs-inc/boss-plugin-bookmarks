@@ -32,7 +32,34 @@ jobs:
           CI: 'true'
           API_VERSION: '1.0.73'
 
-      - name: Run tests
-        run: ./gradlew test --no-daemon
+      # This PR depends on unreleased host contracts. Build their exact source
+      # revision instead of pretending an existing SDK release contains them.
+      - name: Read pinned host revision
+        id: host
+        shell: bash
+        run: |
+          revision=$(cat .github/bookmark-host-revision)
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout matching host contracts
+        uses: actions/checkout@v4
+        with:
+          repository: manishakuhar/BossConsole
+          ref: ${{ steps.host.outputs.revision }}
+          path: build/host-contract
+          persist-credentials: false
+
+      - name: Build pinned bookmark contracts
+        working-directory: build/host-contract
+        run: ./gradlew :plugin-platform:plugin-bookmark-types:desktopJar --no-daemon
+
+      - name: Install virtual display for Compose tests
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1
+
+      - name: Run tests and build plugin
+        run: >-
+          xvfb-run -a ./gradlew test buildPluginJar --no-daemon
+          -PbookmarkTypesJar=${{ github.workspace }}/build/host-contract/plugin-platform/plugin-bookmark-types/build/libs/plugin-bookmark-types-desktop-1.0.5.jar
         env:
           CI: 'true'

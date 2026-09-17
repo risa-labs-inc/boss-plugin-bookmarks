@@ -138,3 +138,14 @@ tasks.register<Jar>("shadowJar") {
     from(sourceSets.main.get().output)
     from("src/main/resources")
 }
+
+// This branch consumes an unreleased host contract. Fail with an actionable
+// message instead of unresolved-reference errors when the local jar is omitted.
+tasks.named("compileKotlin") {
+    doFirst {
+        val contract = providers.gradleProperty("bookmarkTypesJar").orNull
+        check(contract != null && file(contract).isFile) {
+            "Bookmark library host contract required: build the pinned host module and pass -PbookmarkTypesJar=<jar>. See README.md."
+        }
+    }
+}
