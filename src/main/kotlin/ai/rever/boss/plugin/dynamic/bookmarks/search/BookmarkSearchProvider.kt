@@ -69,6 +69,8 @@ internal class BookmarkSearchProvider(
                             SearchResultIcon.MaterialIcon("Language")
                         bookmark.tabConfig.type == "editor" ->
                             SearchResultIcon.MaterialIcon("Code")
+                        bookmark.tabConfig.type == "diff" -> SearchResultIcon.MaterialIcon("Difference")
+                        bookmark.tabConfig.type == "composer" -> SearchResultIcon.MaterialIcon("SmartToy")
                         bookmark.tabConfig.type == "terminal" ->
                             SearchResultIcon.MaterialIcon("Terminal")
                         else ->

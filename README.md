@@ -36,6 +36,8 @@ Launch a matching development host with `-Dboss.bookmarks.directory=/absolute/pa
 
 Imported terminal bookmarks can contain a saved startup command. Opening such a bookmark may execute that command in its terminal; inspect the destination and command before opening imported records.
 
+Working-tree file diffs retain their source project and open only when that project is active; staged, commit and range diffs are not converted into different comparisons. Deleted working-tree paths remain valid. Composer bookmarks retain the opaque session ID; its plugin manages session content and missing-session behavior. A second tab for the same Composer session in the same pane is explicitly refused; ordinary Open returns to the existing tab.
+
 ## Validation
 
 Run the full test suite above before using a new artifact. Store tests cover persistence failure, conflicts, migration, duplicate saves, favorites, metadata, undo and restart. Compose tests cover panel navigation, root bookmarks alongside custom folders, favorite filters, narrow navigation, and edit/delete dialogs. Passing these tests does not substitute for testing the combined plugin and host in the running application.

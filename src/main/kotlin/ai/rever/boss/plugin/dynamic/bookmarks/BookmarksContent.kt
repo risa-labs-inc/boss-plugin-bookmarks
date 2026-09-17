@@ -767,6 +767,8 @@ private fun BookmarkIcon(
             "browser" -> Icons.Outlined.Language
             "editor" -> Icons.Outlined.Code
             "terminal" -> Icons.Outlined.Terminal
+            "diff" -> Icons.Outlined.Difference
+            "composer" -> Icons.Outlined.SmartToy
             else -> Icons.AutoMirrored.Outlined.InsertDriveFile
         }
         Icon(

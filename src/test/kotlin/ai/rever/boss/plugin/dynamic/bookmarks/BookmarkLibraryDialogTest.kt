@@ -56,4 +56,16 @@ class BookmarkLibraryDialogTest {
         compose.onNodeWithText("Unsorted").assertDoesNotExist()
     }
 
+    @Test fun `composer editor labels opaque session without treating it as a file`() {
+        var saved: TabConfig? = null
+        val session = bookmark.copy(tabConfig = TabConfig("composer", "Composer", filePath = "session:one"))
+        compose.setContent { BossTheme {
+            LibraryEditDialog(session, collection.id, BookmarkLibraryState(collections = listOf(collection), ready = true), false, null, {}, { _, config, _, _, _ -> saved = config })
+        } }
+        compose.onNodeWithText("Session ID").assertExists()
+        compose.onNodeWithText("session:one").performTextReplacement("session:two")
+        compose.onNodeWithText("Save").performClick()
+        compose.runOnIdle { assertEquals("session:two", saved?.filePath) }
+    }
+
 }

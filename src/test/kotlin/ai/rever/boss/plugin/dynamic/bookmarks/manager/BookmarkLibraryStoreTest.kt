@@ -194,4 +194,28 @@ class BookmarkLibraryStoreTest {
         } finally { store.close(); dir.deleteRecursively() }
     }
 
+    @Test fun `diff and composer targets survive restart without losing project or opaque session`() = runBlocking {
+        val dir = Files.createTempDirectory("library-extra-targets").toFile()
+        val store = BookmarkLibraryStore(BookmarkLibraryDisk(dir.path), false)
+        val diff = TabConfig("diff", "Deleted", filePath = "deleted.txt", workingDirectory = "/project")
+        val composer = TabConfig("composer", "Session", filePath = "session:opaque")
+        try {
+            ready(store)
+            for (config in listOf(diff, composer)) {
+                assertTrue(store.saveBookmark(request(store).copy(tabConfig = config, name = config.title)).success)
+            }
+            assertFalse(meaningfulTarget(diff.copy(workingDirectory = null)))
+            assertFalse(meaningfulTarget(diff.copy(filePath = "../outside")))
+            assertFalse(meaningfulTarget(composer.copy(filePath = " ")))
+            assertFalse(sameTarget(diff, diff.copy(workingDirectory = "/other")))
+            assertFalse(sameTarget(composer, composer.copy(filePath = "session:other")))
+            store.close()
+            val restarted = BookmarkLibraryStore(BookmarkLibraryDisk(dir.path), false)
+            try {
+                ready(restarted)
+                assertEquals(listOf(diff, composer), restarted.state.value.collections.flatMap { it.bookmarks }.map { it.tabConfig })
+            } finally { restarted.close() }
+        } finally { store.close(); dir.deleteRecursively() }
+    }
+
 }

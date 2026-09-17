@@ -56,9 +56,11 @@ internal fun LibraryEditDialog(
                 Text(when (type) {
                     "terminal" -> "Opens a new terminal with this startup folder and command. Running sessions are never reused."
                     "browser" -> "Saves this address, not browsing history or sign-ins."
+                    "diff" -> "Opens the working-tree diff in its saved project: ${configBase.workingDirectory.orEmpty()}"
+                    "composer" -> "Reopens this Composer session. Its content is managed by the Composer tool."
                     else -> "Opens this saved file in the current pane."
                 })
-                OutlinedTextField(target, { target = it }, label = { Text(when(type) { "browser" -> "Address"; "terminal" -> "Startup folder"; else -> "File path" }) }, singleLine = true, enabled = !busy)
+                OutlinedTextField(target, { target = it }, label = { Text(when(type) { "browser" -> "Address"; "terminal" -> "Startup folder"; "composer" -> "Session ID"; "diff" -> "File path within saved project"; else -> "File path" }) }, singleLine = true, enabled = !busy)
                 if (type == "terminal") OutlinedTextField(command, { command = it }, label = { Text("Initial command (optional)") }, singleLine = true, enabled = !busy)
                 CollectionPicker(state.collections, destination, { destination = it }, !busy, state.unfiledCollectionIds)
                 Row { Checkbox(favorite, { favorite = it }, enabled = !busy); Text("Show in Favorites", modifier = Modifier.padding(top = 12.dp)) }

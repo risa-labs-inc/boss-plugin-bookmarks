@@ -216,7 +216,12 @@ internal class BookmarkLibraryStore(
 
 internal fun meaningfulTarget(tab: TabConfig): Boolean = when (tab.type) {
     "browser" -> !tab.url.isNullOrBlank() && tab.url != "about:blank" && tab.url != "about:newtab"
-    "editor", "jupyter" -> !tab.filePath.isNullOrBlank()
+    "editor", "jupyter", "composer" -> !tab.filePath.isNullOrBlank()
+    "diff" -> runCatching {
+        val project = java.io.File(requireNotNull(tab.workingDirectory)).toPath().normalize()
+        val path = tab.filePath?.takeIf { it.isNotBlank() }?.let { project.resolve(it).normalize() }
+        project.isAbsolute && path != null && path != project && path.startsWith(project)
+    }.getOrDefault(false)
     "terminal" -> true
     else -> false
 }
@@ -225,7 +230,8 @@ internal fun sameTarget(first: TabConfig, second: TabConfig): Boolean {
     if (first.type != second.type) return false
     return when (first.type) {
         "browser" -> first.url == second.url
-        "editor", "jupyter" -> first.filePath == second.filePath
+        "editor", "jupyter", "composer" -> first.filePath == second.filePath
+        "diff" -> first.filePath == second.filePath && first.workingDirectory == second.workingDirectory
         "terminal" -> {
             val firstDirectory = first.workingDirectory?.takeIf { it.isNotBlank() }
             val directory = second.workingDirectory?.takeIf { it.isNotBlank() }
