@@ -59,6 +59,11 @@ class BookmarksDynamicPlugin : DynamicPlugin {
     private var activeTabsProvider: ActiveTabsProvider? = null
 
     override fun register(context: PluginContext) {
+        // A newer SDK supplies types, not the host behavior. Refuse activation
+        // before touching disk or replacing providers on an older host.
+        checkNotNull(context.getPluginAPI(BookmarkOpeningProvider::class.java)) {
+            "This Bookmarks version requires a BOSS host with the bookmark library opening capability. Update BOSS before enabling it; saved bookmarks have not been changed."
+        }
         // Create internal bookmark manager
         bookmarkManager = BookmarkManager(spaceFavoritesOnly = true)
         library = BookmarkLibraryStore()

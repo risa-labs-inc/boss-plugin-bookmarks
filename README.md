@@ -4,7 +4,7 @@ Bookmarks for browser pages, files and terminals, with independent Favorites, fo
 
 ## Host dependency: not ready for standalone release
 
-This branch requires the matching BossConsole host change ([PR #759](https://github.com/risa-labs-inc/BossConsole/pull/759)), including `BookmarkLibraryProvider`, `BookmarkOpeningProvider`, and `BookmarkLibraryState.unfiledCollectionIds`. SDK **1.0.73 alone does not contain these contracts**. The SDK pin is the baseline dependency, not a declaration that this plugin can run on every host using that SDK.
+This branch requires the matching BossConsole host change ([PR #759](https://github.com/risa-labs-inc/BossConsole/pull/759)), including `BookmarkLibraryProvider`, `BookmarkOpeningProvider`, and `BookmarkLibraryState.unfiledCollectionIds`. SDK **1.0.73 alone does not contain these contracts**. The SDK pin is the baseline dependency, not a declaration that this plugin can run on every host using that SDK. Registration also checks the actual `BookmarkOpeningProvider` capability before creating a store or migrating data; unsupported hosts refuse activation without changing saved bookmarks.
 
 The exact host source revision is pinned in [.github/bookmark-host-revision](.github/bookmark-host-revision). CI builds its bookmark-types module from source. That source-built jar is compile/test-only and is never bundled in the plugin. Its existing module version is not a newly published SDK release.
 
