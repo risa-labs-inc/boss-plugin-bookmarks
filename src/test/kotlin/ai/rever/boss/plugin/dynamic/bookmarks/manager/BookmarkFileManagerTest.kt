@@ -2,13 +2,19 @@ package ai.rever.boss.plugin.dynamic.bookmarks.manager
 
 import ai.rever.boss.plugin.bookmark.Bookmark
 import ai.rever.boss.plugin.bookmark.BookmarkCollection
+import ai.rever.boss.plugin.bookmark.FavoriteWorkspace
 import ai.rever.boss.plugin.workspace.TabConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.attribute.FileTime
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -72,16 +78,85 @@ class BookmarkFileManagerTest {
         assertTrue(fileManager.saveCollections(original))
         val reloaded = fileManager.loadCollections()
 
-        // Compares identity and content rather than whole objects: BookmarkSerializer
-        // leaves kotlinx encodeDefaults at false, so defaulted fields — createdAt
-        // among them — are never written and are regenerated on load. A whole-object
-        // assertion only passes when save and reload land in the same millisecond.
-        assertEquals(original.map { it.id }, reloaded.map { it.id })
-        assertEquals(original.map { it.name }, reloaded.map { it.name })
+        // Whole-object equality, createdAt included: BookmarkSerializer now sets
+        // encodeDefaults = true, so a defaulted field is written as of the moment
+        // it was actually constructed rather than regenerated from the constructor
+        // default on load.
+        assertEquals(original, reloaded)
+    }
+
+    @Test
+    fun `saved JSON explicitly contains every defaulted bookmark and collection field`() = runBlocking {
+        val original = collection("Defaults", bookmarkCount = 1)
+        assertTrue(fileManager.saveCollections(listOf(original)))
+
+        // Inspect the persisted document: immediate reload equality can hide a
+        // missing timestamp when construction and reload share a millisecond.
+        val saved = Json.parseToJsonElement(
+            tempDir.resolve(BookmarkFileManager.COLLECTIONS_FILE).readText()
+        ).jsonArray.single().jsonObject
+        assertEquals(setOf("id", "name", "bookmarks", "isFavorite", "createdAt"), saved.keys)
+        assertEquals(original.createdAt.toString(), saved.getValue("createdAt").jsonPrimitive.content)
+        val bookmark = saved.getValue("bookmarks").jsonArray.single().jsonObject
         assertEquals(
-            original.map { c -> c.bookmarks.map { it.id to it.tabConfig.url } },
-            reloaded.map { c -> c.bookmarks.map { it.id to it.tabConfig.url } },
+            setOf("id", "tabConfig", "workspaceName", "targetWorkspaceName", "targetPanelId",
+                "targetWorkspaces", "notes", "tags", "createdAt", "lastAccessedAt"),
+            bookmark.keys,
         )
+        assertEquals(original.bookmarks.single().createdAt.toString(), bookmark.getValue("createdAt").jsonPrimitive.content)
+        assertEquals(listOf(original), fileManager.loadCollections())
+    }
+
+    @Test
+    fun `legacy collection timestamps use file modification time until saved`() = runBlocking {
+        val file = tempDir.resolve(BookmarkFileManager.COLLECTIONS_FILE)
+        val legacy = """[{"id":"old","name":"Old","bookmarks":[{"id":"missing","tabConfig":{"type":"browser","title":"Old"},"workspaceName":"Work"},{"id":"explicit","tabConfig":{"type":"browser","title":"Known"},"workspaceName":"Work","createdAt":123}],"isFavorite":true}]"""
+        file.writeText(legacy)
+        Files.setLastModifiedTime(file.toPath(), FileTime.fromMillis(1_600_000_000_000L))
+        val modifiedAt = file.lastModified()
+
+        val loaded = fileManager.loadCollections()
+        assertEquals(modifiedAt, loaded.single().createdAt)
+        assertEquals(modifiedAt, loaded.single().bookmarks.first().createdAt)
+        assertEquals(123L, loaded.single().bookmarks.last().createdAt)
+        assertEquals(loaded, fileManager.loadCollections())
+        assertEquals(legacy, file.readText(), "loading must not rewrite legacy files")
+        assertEquals(modifiedAt, file.lastModified())
+
+        assertTrue(fileManager.saveCollections(loaded))
+        Files.setLastModifiedTime(file.toPath(), FileTime.fromMillis(modifiedAt + 60_000))
+        assertEquals(loaded, fileManager.loadCollections(), "saved timestamps must supersede file time")
+    }
+
+    @Test
+    fun `legacy favorite timestamps use file modification time and preserve explicit values`() = runBlocking {
+        val file = tempDir.resolve(BookmarkFileManager.FAVORITE_WORKSPACES_FILE)
+        val legacy = """[{"workspaceId":"old","workspaceName":"Old"},{"workspaceId":"known","workspaceName":"Known","markedAt":123}]"""
+        file.writeText(legacy)
+        Files.setLastModifiedTime(file.toPath(), FileTime.fromMillis(1_600_000_000_000L))
+        val modifiedAt = file.lastModified()
+
+        val loaded = fileManager.loadFavoriteWorkspaces()
+        assertEquals(modifiedAt, loaded.first().markedAt)
+        assertEquals(123L, loaded.last().markedAt)
+        assertEquals(loaded, fileManager.loadFavoriteWorkspaces())
+        assertEquals(legacy, file.readText())
+        assertEquals(modifiedAt, file.lastModified())
+
+        assertTrue(fileManager.saveFavoriteWorkspaces(loaded))
+        Files.setLastModifiedTime(file.toPath(), FileTime.fromMillis(modifiedAt + 60_000))
+        assertEquals(loaded, fileManager.loadFavoriteWorkspaces())
+    }
+
+    @Test
+    fun `new favorite workspace timestamps are written explicitly and round trip`() = runBlocking {
+        val original = listOf(FavoriteWorkspace(workspaceId = "work", workspaceName = "Work"))
+        assertTrue(fileManager.saveFavoriteWorkspaces(original))
+        val saved = Json.parseToJsonElement(
+            tempDir.resolve(BookmarkFileManager.FAVORITE_WORKSPACES_FILE).readText()
+        ).jsonArray.single().jsonObject
+        assertEquals(original.single().markedAt.toString(), saved.getValue("markedAt").jsonPrimitive.content)
+        assertEquals(original, fileManager.loadFavoriteWorkspaces())
     }
 
     /** Identity of the file currently at [path], or null if it has none. */
