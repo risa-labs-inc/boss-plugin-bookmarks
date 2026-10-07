@@ -2,6 +2,7 @@ package ai.rever.boss.plugin.dynamic.bookmarks.manager
 
 import ai.rever.boss.plugin.bookmark.Bookmark
 import ai.rever.boss.plugin.bookmark.BookmarkCollection
+import ai.rever.boss.plugin.bookmark.FavoriteWorkspace
 import ai.rever.boss.plugin.workspace.TabConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -13,6 +14,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.attribute.FileTime
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -103,6 +105,58 @@ class BookmarkFileManagerTest {
         )
         assertEquals(original.bookmarks.single().createdAt.toString(), bookmark.getValue("createdAt").jsonPrimitive.content)
         assertEquals(listOf(original), fileManager.loadCollections())
+    }
+
+    @Test
+    fun `legacy collection timestamps use file modification time until saved`() = runBlocking {
+        val file = tempDir.resolve(BookmarkFileManager.COLLECTIONS_FILE)
+        val legacy = """[{"id":"old","name":"Old","bookmarks":[{"id":"missing","tabConfig":{"type":"browser","title":"Old"},"workspaceName":"Work"},{"id":"explicit","tabConfig":{"type":"browser","title":"Known"},"workspaceName":"Work","createdAt":123}],"isFavorite":true}]"""
+        file.writeText(legacy)
+        Files.setLastModifiedTime(file.toPath(), FileTime.fromMillis(1_600_000_000_000L))
+        val modifiedAt = file.lastModified()
+
+        val loaded = fileManager.loadCollections()
+        assertEquals(modifiedAt, loaded.single().createdAt)
+        assertEquals(modifiedAt, loaded.single().bookmarks.first().createdAt)
+        assertEquals(123L, loaded.single().bookmarks.last().createdAt)
+        assertEquals(loaded, fileManager.loadCollections())
+        assertEquals(legacy, file.readText(), "loading must not rewrite legacy files")
+        assertEquals(modifiedAt, file.lastModified())
+
+        assertTrue(fileManager.saveCollections(loaded))
+        Files.setLastModifiedTime(file.toPath(), FileTime.fromMillis(modifiedAt + 60_000))
+        assertEquals(loaded, fileManager.loadCollections(), "saved timestamps must supersede file time")
+    }
+
+    @Test
+    fun `legacy favorite timestamps use file modification time and preserve explicit values`() = runBlocking {
+        val file = tempDir.resolve(BookmarkFileManager.FAVORITE_WORKSPACES_FILE)
+        val legacy = """[{"workspaceId":"old","workspaceName":"Old"},{"workspaceId":"known","workspaceName":"Known","markedAt":123}]"""
+        file.writeText(legacy)
+        Files.setLastModifiedTime(file.toPath(), FileTime.fromMillis(1_600_000_000_000L))
+        val modifiedAt = file.lastModified()
+
+        val loaded = fileManager.loadFavoriteWorkspaces()
+        assertEquals(modifiedAt, loaded.first().markedAt)
+        assertEquals(123L, loaded.last().markedAt)
+        assertEquals(loaded, fileManager.loadFavoriteWorkspaces())
+        assertEquals(legacy, file.readText())
+        assertEquals(modifiedAt, file.lastModified())
+
+        assertTrue(fileManager.saveFavoriteWorkspaces(loaded))
+        Files.setLastModifiedTime(file.toPath(), FileTime.fromMillis(modifiedAt + 60_000))
+        assertEquals(loaded, fileManager.loadFavoriteWorkspaces())
+    }
+
+    @Test
+    fun `new favorite workspace timestamps are written explicitly and round trip`() = runBlocking {
+        val original = listOf(FavoriteWorkspace(workspaceId = "work", workspaceName = "Work"))
+        assertTrue(fileManager.saveFavoriteWorkspaces(original))
+        val saved = Json.parseToJsonElement(
+            tempDir.resolve(BookmarkFileManager.FAVORITE_WORKSPACES_FILE).readText()
+        ).jsonArray.single().jsonObject
+        assertEquals(original.single().markedAt.toString(), saved.getValue("markedAt").jsonPrimitive.content)
+        assertEquals(original, fileManager.loadFavoriteWorkspaces())
     }
 
     /** Identity of the file currently at [path], or null if it has none. */

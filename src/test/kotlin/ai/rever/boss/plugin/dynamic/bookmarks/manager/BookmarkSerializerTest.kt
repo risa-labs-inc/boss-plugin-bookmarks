@@ -7,6 +7,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlinx.serialization.SerializationException
 import kotlin.test.assertTrue
 
 class BookmarkSerializerTest {
@@ -18,6 +20,25 @@ class BookmarkSerializerTest {
         assertEquals("Work", loaded.single().bookmarks.single().workspaceName)
         assertTrue(loaded.single().bookmarks.single().tags.isEmpty())
         assertEquals(loaded, BookmarkSerializer.deserializeCollections(BookmarkSerializer.serializeCollections(loaded)))
+    }
+
+    @Test
+    fun `legacy timestamp fallback preserves explicit collection timestamp and tab fields`() {
+        val document = """[{"id":"old","name":"Old","createdAt":42,"bookmarks":[{"id":"bookmark","tabConfig":{"type":"browser","title":"Old","url":"https://example.com/createdAt"},"workspaceName":"Work"}]}]"""
+        val loaded = BookmarkSerializer.deserializeCollections(document, legacyTimestamp = 100)
+        assertEquals(42L, loaded.single().createdAt)
+        assertEquals(100L, loaded.single().bookmarks.single().createdAt)
+        assertEquals("https://example.com/createdAt", loaded.single().bookmarks.single().tabConfig.url)
+    }
+
+    @Test
+    fun `timestamp fallback does not conceal malformed legacy documents`() {
+        assertFailsWith<SerializationException> {
+            BookmarkSerializer.deserializeCollections("""[{"id":"old","name":"Old","bookmarks":{}}]""", 100)
+        }
+        assertFailsWith<SerializationException> {
+            BookmarkSerializer.deserializeFavoriteWorkspaces("""[{"workspaceId":"old","workspaceName":"Old","markedAt":"invalid"}]""", 100)
+        }
     }
 
     @Test

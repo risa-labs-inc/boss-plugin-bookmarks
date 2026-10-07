@@ -264,7 +264,7 @@ internal open class BookmarkFileManager(
 
                 val json = file.readText()
                 try {
-                    BookmarkSerializer.deserializeCollections(json)
+                    BookmarkSerializer.deserializeCollections(json, legacyTimestamp = file.lastModified())
                 } catch (parseError: Exception) {
                     // An unparseable file is about to be replaced by a fresh
                     // [Favorites] document — and now that writes are atomic, that
@@ -324,7 +324,7 @@ internal open class BookmarkFileManager(
                 }
 
                 val json = file.readText()
-                BookmarkSerializer.deserializeFavoriteWorkspaces(json)
+                BookmarkSerializer.deserializeFavoriteWorkspaces(json, legacyTimestamp = file.lastModified())
             } catch (e: Exception) {
                 logger.warn(LogCategory.FILE, "Error loading favorite workspaces", error = e)
                 emptyList()
