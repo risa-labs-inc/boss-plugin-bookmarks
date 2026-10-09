@@ -9,17 +9,24 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileSystemException
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.StandardOpenOption.TRUNCATE_EXISTING
+import java.nio.file.StandardOpenOption.WRITE
 import java.nio.file.attribute.PosixFileAttributeView
+import java.nio.file.attribute.PosixFilePermission.OWNER_READ
+import java.nio.file.attribute.PosixFilePermission.OWNER_WRITE
 
 /**
  * Manages file-based bookmark storage.
  *
- * Stores bookmark data in ~/Documents/BOSS/bookmarks/:
+ * Stores bookmark data in ~/.boss/plugin-data/ai.rever.boss.plugin.dynamic.bookmarks/bookmarks/:
  * - collections.json: All bookmark collections
  * - favorite-workspaces.json: Favorite workspace IDs
  *
@@ -27,7 +34,7 @@ import java.nio.file.attribute.PosixFileAttributeView
  */
 internal open class BookmarkFileManager(
     // Injectable so tests can point at a temp directory instead of the real
-    // ~/Documents/BOSS/bookmarks — a test that hammers concurrent saves must
+    // BOSS data root — a test that hammers concurrent saves must
     // never touch the user's actual bookmarks.
     private val bookmarksDirectory: String = defaultBookmarksDirectory()
 ) {
@@ -52,20 +59,109 @@ internal open class BookmarkFileManager(
         /** Only sweep staging files old enough that no write can still own them. */
         private const val STALE_TMP_AGE_MS = 5 * 60 * 1000L
 
-        /** Default bookmarks directory name under Documents */
-        private const val BOOKMARKS_DIR = "BOSS/bookmarks"
+        private const val PLUGIN_DATA_DIR =
+            ".boss/plugin-data/ai.rever.boss.plugin.dynamic.bookmarks/bookmarks"
+        private const val LEGACY_BOOKMARKS_DIR = "Documents/BOSS/bookmarks"
+        internal const val LEGACY_IMPORT_MARKER = ".legacy-documents-import-complete"
+        private val LEGACY_BOOKMARK_FILES = listOf(COLLECTIONS_FILE, FAVORITE_WORKSPACES_FILE)
 
-        /** Production location: ~/Documents/BOSS/bookmarks/ */
+        /** Production location, contained by the BOSS durable-data root. */
         fun defaultBookmarksDirectory(): String {
-            val userHome = System.getProperty("user.home")
-            return Paths.get(userHome, "Documents", BOOKMARKS_DIR).toString()
+            val userHome = System.getProperty("user.home") ?: error("user.home is unavailable")
+            return defaultBookmarksDirectory(userHome)
+        }
+
+        internal fun defaultBookmarksDirectory(userHome: String): String {
+            val destination = Paths.get(userHome, PLUGIN_DATA_DIR).normalize()
+            val bossRoot = Paths.get(userHome, ".boss").normalize()
+            require(destination.startsWith(bossRoot)) { "bookmark data escaped the BOSS root" }
+            runCatching {
+                migrateLegacyBookmarks(Paths.get(userHome, LEGACY_BOOKMARKS_DIR), destination)
+            }.onFailure { error ->
+                BossLogger.forComponent("BookmarkFileManager")
+                    .warn(LogCategory.FILE, "Could not import legacy bookmarks", error = error)
+            }
+            return destination.toString()
+        }
+
+        /**
+         * Copy legacy bookmark files into the managed root without deleting or
+         * overwriting either side. A failed/partial migration is safe to retry.
+         */
+        internal fun migrateLegacyBookmarks(
+            legacy: Path,
+            destination: Path,
+            copyRecord: (source: Path, target: Path) -> Unit = ::copyLegacyRecordSafely,
+        ) {
+            if (!Files.isDirectory(legacy) || Files.isSymbolicLink(legacy)) return
+            Files.createDirectories(destination)
+            val marker = destination.resolve(LEGACY_IMPORT_MARKER)
+            if (Files.exists(marker, NOFOLLOW_LINKS)) return
+
+            val failures =
+                LEGACY_BOOKMARK_FILES.mapNotNull { name ->
+                    val source = legacy.resolve(name)
+                    if (!Files.isRegularFile(source) || Files.exists(destination.resolve(name), NOFOLLOW_LINKS)) {
+                        return@mapNotNull null
+                    }
+                    runCatching { copyRecord(source, destination.resolve(name)) }
+                        .exceptionOrNull()
+                        ?.takeUnless { it is FileAlreadyExistsException }
+                }
+
+            if (failures.isNotEmpty()) {
+                throw IllegalStateException(
+                    "Failed to import ${failures.size} legacy bookmark file(s)",
+                    failures.first(),
+                )
+            }
+            try {
+                Files.createFile(marker)
+            } catch (_: FileAlreadyExistsException) {
+                // Another BOSS process completed the same one-shot import.
+            }
+        }
+
+        /** Publish a complete sibling without ever replacing current managed data. */
+        internal fun copyLegacyRecordSafely(
+            source: Path,
+            target: Path,
+            beforePublish: (Path) -> Unit = {},
+        ) {
+            val temporary = Files.createTempFile(target.parent, ".${target.fileName}-", ".tmp")
+            try {
+                if ("posix" in temporary.fileSystem.supportedFileAttributeViews()) {
+                    Files.setPosixFilePermissions(temporary, setOf(OWNER_READ, OWNER_WRITE))
+                }
+                Files.newInputStream(source).use { input ->
+                    Files.newOutputStream(temporary, WRITE, TRUNCATE_EXISTING).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                FileChannel.open(temporary, WRITE).use { it.force(true) }
+                beforePublish(temporary)
+                try {
+                    Files.createLink(target, temporary)
+                } catch (error: FileAlreadyExistsException) {
+                    throw error
+                } catch (_: UnsupportedOperationException) {
+                    Files.move(temporary, target)
+                } catch (_: FileSystemException) {
+                    // Some providers expose no hard-link support as a generic
+                    // filesystem error. A same-directory move still publishes
+                    // the complete temporary file without replacing target.
+                    Files.move(temporary, target)
+                }
+            } finally {
+                Files.deleteIfExists(temporary)
+            }
         }
     }
 
     /**
      * Get the bookmarks directory path.
      *
-     * @return Full path to bookmarks directory (e.g., ~/Documents/BOSS/bookmarks/)
+     * @return Full path to the plugin's directory beneath ~/.boss/plugin-data/
      */
     fun getBookmarksDirectory(): String = bookmarksDirectory
 
@@ -100,10 +196,8 @@ internal open class BookmarkFileManager(
      * replacing move, which is still far narrower a window than truncate-write.
      */
     private fun writeAtomically(filePath: String, json: String) {
-        // Resolve a symlink to its target before replacing it. ~/Documents is
-        // iCloud-synced by default on macOS, and a moved-into-place file would
-        // otherwise replace the *link* with a regular file rather than writing
-        // through it.
+        // Resolve a symlink to its target before replacing it so existing
+        // installations that deliberately link a file keep working.
         val requested = Paths.get(filePath)
         // A dangling link (stale relative path, half-synced iCloud) makes
         // toRealPath throw; falling back to the link path keeps saving instead
@@ -147,8 +241,7 @@ internal open class BookmarkFileManager(
             } catch (e: FileSystemException) {
                 // Not just AtomicMoveNotSupportedException: on Windows a target
                 // held open by an indexer, a backup agent or OneDrive surfaces
-                // as AccessDeniedException, and ~/Documents is exactly where
-                // those run. Both are FileSystemException.
+                // as AccessDeniedException. Both are FileSystemException.
                 logger.debug(
                     LogCategory.FILE,
                     "Atomic move rejected - falling back to a replacing move",
