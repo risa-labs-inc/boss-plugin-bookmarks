@@ -45,6 +45,10 @@ repositories {
 }
 
 dependencies {
+    providers.gradleProperty("bookmarkTypesJar").orNull?.let { path ->
+        compileOnly(files(path))
+        testImplementation(files(path))
+    }
     compileOnly(bossPluginApiJar)
 
     // Compose dependencies
@@ -69,6 +73,8 @@ dependencies {
     // outside the host so they need the same classes on the test classpath.
     testImplementation(bossPluginApiJar)
     testImplementation(kotlin("test"))
+    testImplementation(compose.desktop.uiTestJUnit4)
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.11.4")
 
     // BossLogger resolves an SLF4J backend at first use. The host supplies one
     // at runtime; without it on the test classpath a logged warning throws
@@ -131,4 +137,15 @@ tasks.register<Jar>("shadowJar") {
     from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
     from(sourceSets.main.get().output)
     from("src/main/resources")
+}
+
+// This branch consumes an unreleased host contract. Fail with an actionable
+// message instead of unresolved-reference errors when the local jar is omitted.
+tasks.named("compileKotlin") {
+    doFirst {
+        val contract = providers.gradleProperty("bookmarkTypesJar").orNull
+        check(contract != null && file(contract).isFile) {
+            "Bookmark library host contract required: build the pinned host module and pass -PbookmarkTypesJar=<jar>. See README.md."
+        }
+    }
 }

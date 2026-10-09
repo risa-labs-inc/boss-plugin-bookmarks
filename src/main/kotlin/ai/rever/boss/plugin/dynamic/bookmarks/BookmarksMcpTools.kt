@@ -5,17 +5,18 @@ import ai.rever.boss.plugin.api.McpToolHandler
 import ai.rever.boss.plugin.api.McpToolProvider
 import ai.rever.boss.plugin.api.McpToolResult
 import ai.rever.boss.plugin.bookmark.Bookmark
-import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
+import ai.rever.boss.plugin.api.BookmarkDataProvider
+import java.util.UUID
 import ai.rever.boss.plugin.workspace.TabConfig
 
 /**
  * MCP tools contributed by the Bookmarks plugin: list, add, and remove bookmarks
- * via the plugin's internal [BookmarkManager]. Registered in
+ * via the plugin's internal [BookmarkDataProvider]. Registered in
  * [BookmarksDynamicPlugin.register]; removed automatically on disable/unload.
  */
 internal class BookmarksMcpToolProvider(
     override val providerId: String,
-    private val manager: BookmarkManager,
+    private val manager: BookmarkDataProvider,
 ) : McpToolProvider {
 
     override fun tools(): List<McpToolDefinition> = listOf(
@@ -36,7 +37,7 @@ internal class BookmarksMcpToolProvider(
         ),
         McpToolDefinition(
             name = "bookmark_add",
-            description = "Add a URL bookmark to a collection (default \"Favorites\").",
+            description = "Add a URL bookmark to a collection (default first collection).",
             inputSchema = ADD_SCHEMA,
             readOnly = false,
             handler = McpToolHandler { args ->
@@ -44,12 +45,12 @@ internal class BookmarksMcpToolProvider(
                     ?: return@McpToolHandler McpToolResult("Missing required argument: title", isError = true)
                 val url = args.string("url")
                     ?: return@McpToolHandler McpToolResult("Missing required argument: url", isError = true)
-                val collection = args.string("collection") ?: "Favorites"
+                val collection = args.string("collection") ?: manager.collections.value.firstOrNull()?.name ?: "Bookmarks"
                 val bookmark = Bookmark(
                     // Not the default id: Bookmark.generateId() is
                     // "bookmark-<epochMillis>", so two adds in the same
                     // millisecond would alias each other.
-                    id = manager.newBookmarkId(),
+                    id = "bookmark-${UUID.randomUUID()}",
                     tabConfig = TabConfig(type = "browser", title = title, url = url),
                     workspaceName = "",
                 )
@@ -88,7 +89,7 @@ internal class BookmarksMcpToolProvider(
 
     private companion object {
         const val ADD_SCHEMA =
-            """{"type":"object","properties":{"title":{"type":"string","description":"Bookmark title."},"url":{"type":"string","description":"URL to bookmark."},"collection":{"type":"string","description":"Collection name (default Favorites)."}},"required":["title","url"]}"""
+            """{"type":"object","properties":{"title":{"type":"string","description":"Bookmark title."},"url":{"type":"string","description":"URL to bookmark."},"collection":{"type":"string","description":"Collection name (default first collection)."}},"required":["title","url"]}"""
         const val REMOVE_SCHEMA =
             """{"type":"object","properties":{"collection_id":{"type":"string","description":"Collection id."},"bookmark_id":{"type":"string","description":"Bookmark id."}},"required":["collection_id","bookmark_id"]}"""
     }

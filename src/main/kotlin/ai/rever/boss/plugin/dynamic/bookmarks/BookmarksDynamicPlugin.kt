@@ -7,7 +7,9 @@ import ai.rever.boss.plugin.api.DynamicPlugin
 import ai.rever.boss.plugin.api.PluginContext
 import ai.rever.boss.plugin.api.SplitViewOperations
 import ai.rever.boss.plugin.api.WorkspaceDataProvider
-import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkDataProviderImpl
+import ai.rever.boss.plugin.bookmark.BookmarkOpeningProvider
+import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkLibraryStore
+import ai.rever.boss.plugin.dynamic.bookmarks.manager.LibraryCompatibilityProvider
 import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
 import ai.rever.boss.plugin.dynamic.bookmarks.search.BookmarkSearchProvider
 import ai.rever.boss.plugin.logging.BossLogger
@@ -47,7 +49,8 @@ class BookmarksDynamicPlugin : DynamicPlugin {
     private var searchProvider: BookmarkSearchProvider? = null
 
     // BookmarkDataProvider exposed to BossConsole UI via plugin API
-    private var bookmarkDataProvider: BookmarkDataProviderImpl? = null
+    private var bookmarkDataProvider: BookmarkDataProvider? = null
+    private var library: BookmarkLibraryStore? = null
 
     // Providers from PluginContext (still needed for workspace and tab operations)
     private var workspaceDataProvider: WorkspaceDataProvider? = null
@@ -56,19 +59,26 @@ class BookmarksDynamicPlugin : DynamicPlugin {
     private var activeTabsProvider: ActiveTabsProvider? = null
 
     override fun register(context: PluginContext) {
+        // A newer SDK supplies types, not the host behavior. Refuse activation
+        // before touching disk or replacing providers on an older host.
+        checkNotNull(context.getPluginAPI(BookmarkOpeningProvider::class.java)) {
+            "This Bookmarks version requires a BOSS host with the bookmark library opening capability. Update BOSS before enabling it; saved bookmarks have not been changed."
+        }
         // Create internal bookmark manager
-        bookmarkManager = BookmarkManager()
+        bookmarkManager = BookmarkManager(spaceFavoritesOnly = true)
+        library = BookmarkLibraryStore()
+        bookmarkDataProvider = LibraryCompatibilityProvider(library!!, bookmarkManager!!)
+        context.registerPluginAPI(library!!)
 
         // Create and register search provider for GlobalSearchService
-        searchProvider = BookmarkSearchProvider(bookmarkManager!!)
+        searchProvider = BookmarkSearchProvider(bookmarkDataProvider!!)
         context.registerSearchProvider(searchProvider!!)
 
         // Contribute bookmarks_list/add/remove MCP tools; auto-removed on disable/unload.
-        context.registerMcpToolProvider(BookmarksMcpToolProvider(pluginId, bookmarkManager!!))
+        context.registerMcpToolProvider(BookmarksMcpToolProvider(pluginId, bookmarkDataProvider!!))
 
         // Create and register BookmarkDataProvider for BossConsole UI
         // This allows context menus, bookmark dialogs, etc. to work
-        bookmarkDataProvider = BookmarkDataProviderImpl(bookmarkManager!!)
         context.registerPluginAPI(bookmarkDataProvider!!)
 
         // Get providers from context (for workspace and tab operations)
@@ -86,7 +96,9 @@ class BookmarksDynamicPlugin : DynamicPlugin {
                 workspaceDataProvider = workspaceDataProvider,
                 splitViewOperations = splitViewOperations,
                 contextMenuProvider = contextMenuProvider,
-                activeTabsProvider = activeTabsProvider
+                activeTabsProvider = activeTabsProvider,
+                library = library!!,
+                opener = { context.getPluginAPI(BookmarkOpeningProvider::class.java) },
             )
         }
     }
@@ -119,6 +131,8 @@ class BookmarksDynamicPlugin : DynamicPlugin {
         searchProvider = null
         bookmarkDataProvider = null
         bookmarkManager = null
+        library?.close()
+        library = null
         workspaceDataProvider = null
         splitViewOperations = null
         contextMenuProvider = null

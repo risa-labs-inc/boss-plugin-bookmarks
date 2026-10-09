@@ -57,6 +57,7 @@ internal open class BookmarkFileManager(
 
         /** Production location: ~/Documents/BOSS/bookmarks/ */
         fun defaultBookmarksDirectory(): String {
+            System.getProperty("boss.bookmarks.directory")?.takeIf { it.isNotBlank() }?.let { return it }
             val userHome = System.getProperty("user.home")
             return Paths.get(userHome, "Documents", BOOKMARKS_DIR).toString()
         }
@@ -99,7 +100,7 @@ internal open class BookmarkFileManager(
      * ATOMIC_MOVE is unsupported on a few filesystems; fall back to a plain
      * replacing move, which is still far narrower a window than truncate-write.
      */
-    private fun writeAtomically(filePath: String, json: String) {
+    internal fun writeAtomically(filePath: String, json: String) {
         // Resolve a symlink to its target before replacing it. ~/Documents is
         // iCloud-synced by default on macOS, and a moved-into-place file would
         // otherwise replace the *link* with a regular file rather than writing

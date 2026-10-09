@@ -1,74 +1,43 @@
 # BOSS Bookmarks Plugin
 
-A dynamic plugin for BOSS that displays and manages browser bookmarks in a sidebar panel.
+Bookmarks for browser pages, files and terminals, with independent Favorites, folders, and workspace navigation. Removing a favorite keeps the saved bookmark. Edit and move preserve metadata; deletion supports undo.
 
-## Status: Phase 2 (In Progress)
+## Host dependency: not ready for standalone release
 
-This plugin is part of the BOSS dynamic plugins initiative. Full implementation is **deferred to Phase 2** because it requires window-scoped services that are currently provided via CompositionLocals in BossApp.kt.
+This branch requires the matching BossConsole host change ([PR #759](https://github.com/risa-labs-inc/BossConsole/pull/759)), including `BookmarkLibraryProvider`, `BookmarkOpeningProvider`, and `BookmarkLibraryState.unfiledCollectionIds`. SDK **1.0.73 alone does not contain these contracts**. The SDK pin is the baseline dependency, not a declaration that this plugin can run on every host using that SDK. Registration also checks the actual `BookmarkOpeningProvider` capability before creating a store or migrating data; unsupported hosts refuse activation without changing saved bookmarks.
 
-### Required Services
-- `BookmarkDataProvider` - Provides bookmark data and management operations
-- `WorkspaceDataProvider` - Provides workspace state for bookmark operations
-- `SplitViewOperations` - Enables opening bookmarks in split view
+The exact host source revision is pinned in [.github/bookmark-host-revision](.github/bookmark-host-revision). CI builds its bookmark-types module from source. That source-built jar is compile/test-only and is never bundled in the plugin. Its existing module version is not a newly published SDK release.
 
-### Phase 2 Requirements
+Keep the plugin PR dependent/draft until the matching host is available and the contracts are published through the SDK or the production release workflow gains equivalent dependency preparation. The current shared release workflow cannot build this branch as-is: it downloads only the baseline SDK and has no custom contract preparation step. Do not merge to `main` or trigger release while that prerequisite remains unresolved. No guessed minimum host version is declared; deployment requires the actual matching host capabilities.
 
-Before this plugin can be fully functional, BossConsole needs to support window-scoped service injection through `PluginContext`. Currently, these services are instantiated per-window in `BossApp.kt` and provided via CompositionLocals.
+## Reproducible build
 
-### Building
+Requires Git, JDK 17 and network access for Gradle dependencies. From this repository:
 
 ```bash
-./gradlew buildPluginJar
+mkdir -p build/downloaded-deps
+curl -fSL -o build/downloaded-deps/boss-plugin-api.jar \
+  https://github.com/risa-labs-inc/boss-plugin-api/releases/download/v1.0.73/boss-plugin-api-1.0.73.jar
+git clone https://github.com/manishakuhar/BossConsole.git build/host-contract
+git -C build/host-contract checkout --detach "$(cat .github/bookmark-host-revision)"
+./build/host-contract/gradlew -p build/host-contract \
+  :plugin-platform:plugin-bookmark-types:desktopJar
+CI=true ./gradlew test buildPluginJar \
+  -PbookmarkTypesJar="$PWD/build/host-contract/plugin-platform/plugin-bookmark-types/build/libs/plugin-bookmark-types-desktop-1.0.5.jar"
 ```
 
-The plugin JAR will be generated at `build/libs/boss-plugin-bookmarks-1.0.0.jar`.
+On headless Linux, run the final command under `xvfb-run -a` for Compose UI tests. CI supplies this virtual display. Reuse an existing matching local contract jar by passing its absolute path to `-PbookmarkTypesJar`. The plugin artifact is `build/libs/boss-plugin-bookmarks-2.1.10.jar`.
 
-### Installation
+## Isolated trials and persistence
 
-Copy the JAR to `~/.boss/plugins/`:
+Launch a matching development host with `-Dboss.bookmarks.directory=/absolute/path/to/isolated-bookmarks`. Copy test data there first. Without this override the default remains `~/Documents/BOSS/bookmarks`; avoid pointing development trials at your released app's live data.
 
-```bash
-cp build/libs/boss-plugin-bookmarks-1.0.0.jar ~/.boss/plugins/
-```
+`bookmark-library.json` is the durable authority. Migration retains original legacy files and record metadata. Favorites membership and the internal unfiled folder identity are stored separately from folder display names. A user folder named “Unsorted” is still a real folder. Cross-window saves refresh automatically; conflicting external edits require explicit reload. Legacy file changes are conservatively imported as copies, not bidirectionally synchronized with older apps.
 
-**Note**: This plugin will not work until Phase 2 is complete.
+Imported terminal bookmarks can contain a saved startup command. Opening such a bookmark may execute that command in its terminal; inspect the destination and command before opening imported records.
 
-## Development
+Working-tree file diffs retain their source project and open only when that project is active; staged, commit and range diffs are not converted into different comparisons. Deleted working-tree paths remain valid. Composer bookmarks retain the opaque session ID; its plugin manages session content and missing-session behavior. A second tab for the same Composer session in the same pane is explicitly refused; ordinary Open returns to the existing tab.
 
-### Local Development
+## Validation
 
-This project uses Gradle composite builds to depend on BossConsole's plugin-api:
-
-```kotlin
-// settings.gradle.kts
-includeBuild("../../BossConsole") {
-    dependencySubstitution {
-        substitute(module("ai.rever.boss.plugin:plugin-api-desktop")).using(project(":plugins:plugin-api"))
-    }
-}
-```
-
-### Project Structure
-
-```
-boss-plugin-bookmarks/
-├── build.gradle.kts
-├── settings.gradle.kts
-├── src/
-│   └── main/
-│       ├── kotlin/
-│       │   └── ai/rever/boss/plugin/dynamic/bookmarks/
-│       │       ├── BookmarksDynamicPlugin.kt
-│       │       └── BookmarksInfo.kt
-│       └── resources/
-│           └── META-INF/
-│               └── boss-plugin/
-│                   └── plugin.json
-└── README.md
-```
-
-## License
-
-Licensed under the [Apache License, Version 2.0](LICENSE).
-
-Copyright 2025-2026 Risa Labs Inc.
+Run the full test suite above before using a new artifact. Store tests cover persistence failure, conflicts, migration, duplicate saves, favorites, metadata, undo and restart. Compose tests cover panel navigation, root bookmarks alongside custom folders, favorite filters, narrow navigation, and edit/delete dialogs. Passing these tests does not substitute for testing the combined plugin and host in the running application.

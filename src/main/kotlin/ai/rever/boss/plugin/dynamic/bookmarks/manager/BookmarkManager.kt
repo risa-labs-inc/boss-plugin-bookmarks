@@ -34,9 +34,11 @@ import java.util.UUID
 class BookmarkManager internal constructor(
     // Injectable for tests; production callers use the no-arg constructor and
     // get the real ~/Documents/BOSS/bookmarks location.
-    private val fileManager: BookmarkFileManager
+    private val fileManager: BookmarkFileManager,
+    private val loadCollections: Boolean = true,
 ) {
     constructor() : this(BookmarkFileManager())
+    constructor(spaceFavoritesOnly: Boolean) : this(BookmarkFileManager(), !spaceFavoritesOnly)
 
     // Getter (no backing field): see BookmarkFileManager.logger — avoids a
     // Compose-emitted $stable reference the host's ComponentLogger lacks.
@@ -83,6 +85,11 @@ class BookmarkManager internal constructor(
     private fun loadAllData() {
         scope.launch {
             try {
+                if (!loadCollections) {
+                    val loaded = fileManager.loadFavoriteWorkspaces()
+                    _favoriteWorkspaces.update { pending -> loaded + pending.filterNot { p -> loaded.any { it.workspaceId == p.workspaceId } } }
+                    return@launch
+                }
                 // Load collections
                 val onDisk = fileManager.loadCollections()
 
@@ -715,10 +722,12 @@ class BookmarkManager internal constructor(
      * bookmark stop matching the very tab it was saved from, so the star would
      * read "not bookmarked" and re-bookmarking would duplicate it.
      *
-     * A tab with neither a URL nor a file path — a terminal — has no other
-     * identity to compare, so there the title is still all there is to go on.
-     * Renaming such a bookmark does detach it from its tab; that is the
-     * pre-existing behaviour for terminals, not something the rename introduced.
+     * Terminals use their launch directory and command when either is present,
+     * so two projects with the same tab title remain distinct. A renamed or
+     * animated title cannot detach a terminal from that saved launch target.
+     * Legacy terminals with neither field retain title matching only against
+     * another target-less terminal: missing data is never a wildcard for a
+     * different, explicit directory or command.
      *
      * Blank counts as absent, not just null: this plugin already reads `""` as
      * "no target" ([BookmarksViewModel.openTab] skips an editor tab whose
@@ -730,6 +739,14 @@ class BookmarkManager internal constructor(
      */
     private fun Bookmark.matches(tab: TabConfig): Boolean {
         if (tabConfig.type != tab.type) return false
+        if (tab.type == "terminal") {
+            val savedDirectory = tabConfig.workingDirectory?.takeIf { it.isNotBlank() }
+            val directory = tab.workingDirectory?.takeIf { it.isNotBlank() }
+            val savedCommand = tabConfig.initialCommand?.takeIf { it.isNotBlank() }
+            val command = tab.initialCommand?.takeIf { it.isNotBlank() }
+            if (savedDirectory != directory || savedCommand != command) return false
+            if (directory != null || command != null) return true
+        }
         val hasTarget = !tab.url.isNullOrBlank() || !tab.filePath.isNullOrBlank()
         return tabConfig.url == tab.url &&
             tabConfig.filePath == tab.filePath &&

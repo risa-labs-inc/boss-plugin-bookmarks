@@ -2,7 +2,11 @@ package ai.rever.boss.plugin.dynamic.bookmarks
 
 import ai.rever.boss.plugin.api.SplitViewOperations
 import ai.rever.boss.plugin.api.WorkspaceDataProvider
-import ai.rever.boss.plugin.bookmark.Bookmark
+import ai.rever.boss.plugin.bookmark.*
+import ai.rever.boss.plugin.dynamic.bookmarks.manager.sameTarget
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.SharingStarted
 import ai.rever.boss.plugin.bookmark.BookmarkCollection
 import ai.rever.boss.plugin.dynamic.bookmarks.manager.BookmarkManager
 import ai.rever.boss.plugin.workspace.LayoutWorkspace
@@ -16,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 import kotlin.random.Random
 
 /**
@@ -27,12 +32,16 @@ import kotlin.random.Random
 class BookmarksViewModel(
     private val bookmarkManager: BookmarkManager,
     private val workspaceDataProvider: WorkspaceDataProvider?,
-    private val splitViewOperations: SplitViewOperations?
+    private val splitViewOperations: SplitViewOperations?,
+    val library: BookmarkLibraryProvider? = null,
+    private val opener: () -> BookmarkOpeningProvider? = { null },
+    private var windowId: String = "",
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     // Expose bookmark manager's data
-    val collections: StateFlow<List<BookmarkCollection>> = bookmarkManager.collections
+    val collections: StateFlow<List<BookmarkCollection>> = library?.state?.map { it.collections }
+        ?.stateIn(scope, SharingStarted.Eagerly, library.state.value.collections) ?: bookmarkManager.collections
 
     val favoriteWorkspaces = bookmarkManager.favoriteWorkspaces
 
@@ -60,7 +69,27 @@ class BookmarksViewModel(
     /**
      * Handle bookmark click - opens tab in active panel
      */
+    private val opening = java.util.concurrent.atomic.AtomicBoolean(false)
+    fun openBookmark(bookmark: Bookmark, forceNewTab: Boolean = false) {
+        if (!opening.compareAndSet(false, true)) return
+        val originWindow = windowId
+        scope.launch {
+            try {
+                val handler = opener()
+                if (handler == null) _errorMessage.value = "Update BOSS to open this bookmark safely."
+                else {
+                    val result = handler.openBookmark(bookmark, originWindow, null, forceNewTab)
+                    if (!result.success) _errorMessage.value = result.message ?: "This bookmark could not be opened."
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _errorMessage.value = e.message ?: "This bookmark could not be opened."
+            } finally { opening.set(false) }
+        }
+    }
+
     fun onBookmarkClick(bookmark: Bookmark, coroutineScope: CoroutineScope) {
+        if (library != null) { openBookmark(bookmark); return }
         val splitView = splitViewOperations ?: return
 
         // Mark as accessed
@@ -100,6 +129,7 @@ class BookmarksViewModel(
      * Handle workspace tab click
      */
     fun onWorkspaceTabClick(tabConfig: TabConfig) {
+        if (library != null) { openBookmark(Bookmark(tabConfig = tabConfig, workspaceName = "")); return }
         val splitView = splitViewOperations ?: return
         openTab(tabConfig, splitView)
     }
@@ -121,91 +151,107 @@ class BookmarksViewModel(
                 splitView.getActiveTabsComponent()?.addTerminalTab(
                     id = "terminal-${Random.nextLong()}",
                     title = tabConfig.title,
-                    workingDirectory = null
+                    workingDirectory = tabConfig.workingDirectory,
+                    initialCommand = tabConfig.initialCommand
                 )
             }
         }
     }
 
-    // ==================== Bookmark Operations ====================
+    private val mutationBusy = MutableStateFlow(false)
+    val busy: StateFlow<Boolean> = mutationBusy
+    private val mutableUndoToken = MutableStateFlow<String?>(null)
+    val undoToken: StateFlow<String?> = mutableUndoToken
 
-    /**
-     * Add [bookmark] to [collectionName] under the id it already carries.
-     *
-     * Kept alongside [copyBookmark] rather than folded into it: this is the plain
-     * "store this bookmark" operation, for a bookmark that does not exist yet.
-     * [copyBookmark] is for duplicating one that does, and so has to mint a new
-     * identity. Currently unreferenced in the panel — the copy path was its last
-     * caller — but it is the natural entry point for adding a bookmark and is left
-     * in place deliberately.
-     */
+    private fun mutate(message: String, onSuccess: () -> Unit = {}, action: suspend (BookmarkLibraryProvider) -> BookmarkMutationResult) {
+        val provider = library ?: return
+        if (!mutationBusy.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                val result = action(provider)
+                if (result.success) {
+                    _errorMessage.value = null
+                    _statusMessage.value = message
+                    result.undoToken?.let { mutableUndoToken.value = it }
+                    onSuccess()
+                } else _errorMessage.value = result.message ?: "Bookmarks could not be saved."
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                _errorMessage.value = e.message ?: "Bookmark operation failed."
+            } finally { mutationBusy.value = false }
+        }
+    }
+
+    fun setFavorite(bookmarkId: String, favorite: Boolean) = mutate(if (favorite) "Shown in Favorites" else "Removed from Favorites; bookmark kept") {
+        it.setFavorite(bookmarkId, favorite, it.state.value.revision)
+    }
+
+    fun clearFavorites(onSuccess: () -> Unit) = mutate("Favorites cleared; bookmarks kept", onSuccess) { provider ->
+        var result = BookmarkMutationResult(true)
+        for (id in provider.state.value.favoriteBookmarkIds.toList()) {
+            result = provider.setFavorite(id, false, provider.state.value.revision)
+            if (!result.success) break
+        }
+        result
+    }
+
+    fun undoDelete() {
+        val token = mutableUndoToken.value ?: return
+        mutate("Bookmark restored", { mutableUndoToken.value = null }) { it.undo(token, it.state.value.revision) }
+    }
+
+    fun reloadLibrary() { library?.let { provider -> scope.launch { provider.reload() } } }
+
+    fun saveEdit(bookmark: Bookmark, name: String, target: TabConfig, collectionId: String, favorite: Boolean, revision: Long, onSuccess: () -> Unit) =
+        mutate("Bookmark saved", onSuccess) { it.saveBookmark(BookmarkSaveRequest(collectionId, target, name, favorite, revision, bookmark.id)) }
+
     fun addBookmark(collectionName: String, bookmark: Bookmark) {
-        bookmarkManager.addBookmark(collectionName, bookmark)
-        _statusMessage.value = "Bookmark added to $collectionName"
+        if (library == null) { bookmarkManager.addBookmark(collectionName, bookmark); return }
+        val collection = library.state.value.collections.firstOrNull { it.name == collectionName } ?: return
+        mutate("Bookmark saved") { it.saveBookmark(BookmarkSaveRequest(collection.id, bookmark.tabConfig, bookmark.tabConfig.title, it.state.value.defaultFavorite, it.state.value.revision)) }
     }
 
-    /**
-     * Put a second, independent copy of [bookmark] into [collectionName].
-     *
-     * Mints the new identity here rather than leaving [bookmarkManager] to notice
-     * that the source collection still holds this id and re-id it. Both end up
-     * correct today, but "a copy is a new bookmark" is the intent, and expressing
-     * it as a side effect of collision handling would break silently — as a
-     * disappearing copy, with nothing asserting it — if that handling ever became
-     * skip-on-duplicate instead of re-id.
-     */
-    fun copyBookmark(collectionName: String, bookmark: Bookmark) {
-        bookmarkManager.addBookmark(collectionName, bookmark.copy(id = bookmarkManager.newBookmarkId()))
-        _statusMessage.value = "Bookmark copied to $collectionName"
+    fun copyBookmark(collectionName: String, bookmark: Bookmark, onSuccess: () -> Unit = {}) {
+        if (library == null) { bookmarkManager.addBookmark(collectionName, bookmark.copy(id = bookmarkManager.newBookmarkId())); onSuccess(); return }
+        val collection = library.state.value.collections.firstOrNull { it.name == collectionName } ?: return
+        mutate("Bookmark copied", onSuccess) { it.saveBookmark(BookmarkSaveRequest(collection.id, bookmark.tabConfig, bookmark.tabConfig.title, false, it.state.value.revision, allowCopy = true)) }
     }
 
-    fun removeBookmark(collectionId: String, bookmarkId: String) {
-        bookmarkManager.removeBookmark(collectionId, bookmarkId)
-        _statusMessage.value = "Bookmark removed"
+    fun removeBookmark(collectionId: String, bookmarkId: String, expectedRevision: Long? = null, onSuccess: () -> Unit = {}) {
+        if (library == null) { bookmarkManager.removeBookmark(collectionId, bookmarkId); onSuccess(); return }
+        mutate("Bookmark deleted", onSuccess) { it.deleteBookmark(bookmarkId, expectedRevision ?: it.state.value.revision) }
     }
 
-    /**
-     * Give the bookmark a new display title.
-     *
-     * Passes the id rather than the [Bookmark] the panel is holding so a rename
-     * cannot write back a snapshot taken before the dialog opened.
-     */
     fun renameBookmark(collectionId: String, bookmarkId: String, newTitle: String) {
-        val title = newTitle.trim()
-        if (title.isEmpty()) return
-        bookmarkManager.renameBookmark(collectionId, bookmarkId, title)
-        _statusMessage.value = "Bookmark renamed to $title"
+        if (library == null) { bookmarkManager.renameBookmark(collectionId, bookmarkId, newTitle); return }
+        val snapshot = library.state.value
+        val bookmark = snapshot.collections.flatMap { it.bookmarks }.find { it.id == bookmarkId } ?: return
+        saveEdit(bookmark, newTitle, bookmark.tabConfig, collectionId, bookmarkId in snapshot.favoriteBookmarkIds, snapshot.revision) {}
     }
 
-    fun moveBookmark(bookmarkId: String, fromCollectionId: String, toCollectionId: String) {
-        bookmarkManager.moveBookmark(bookmarkId, fromCollectionId, toCollectionId)
-        _statusMessage.value = "Bookmark moved"
+    fun moveBookmark(bookmarkId: String, fromCollectionId: String, toCollectionId: String, onSuccess: () -> Unit = {}) {
+        if (library == null) { bookmarkManager.moveBookmark(bookmarkId, fromCollectionId, toCollectionId); onSuccess(); return }
+        mutate("Bookmark moved", onSuccess) { it.moveBookmark(bookmarkId, toCollectionId, it.state.value.revision) }
     }
 
-    fun isTabBookmarked(tabConfig: TabConfig): Boolean {
-        return bookmarkManager.isTabBookmarked(tabConfig)
-    }
-
+    fun isTabBookmarked(tabConfig: TabConfig): Boolean = findBookmarkForTab(tabConfig) != null
     fun findBookmarkForTab(tabConfig: TabConfig): Pair<String, String>? {
-        return bookmarkManager.findBookmarkForTab(tabConfig)
+        if (library == null) return bookmarkManager.findBookmarkForTab(tabConfig)
+        library.state.value.collections.forEach { c -> c.bookmarks.firstOrNull { sameTarget(it.tabConfig, tabConfig) }?.let { return c.id to it.id } }
+        return null
     }
 
-    // ==================== Collection Operations ====================
-
-    fun createCollection(name: String): BookmarkCollection? {
-        val collection = bookmarkManager.createCollection(name)
-        _statusMessage.value = "Created collection: $name"
-        return collection
+    fun createCollection(name: String, onSuccess: () -> Unit = {}) {
+        if (library == null) { bookmarkManager.createCollection(name); onSuccess(); return }
+        mutate("Folder created", onSuccess) { it.createCollection(name, it.state.value.revision) }
     }
-
-    fun deleteCollection(collectionId: String) {
-        bookmarkManager.deleteCollection(collectionId)
-        _statusMessage.value = "Collection deleted"
+    fun deleteCollection(collectionId: String, moveTo: String? = null, onSuccess: () -> Unit = {}) {
+        if (library == null) { bookmarkManager.deleteCollection(collectionId); onSuccess(); return }
+        mutate("Folder deleted", onSuccess) { it.deleteCollection(collectionId, moveTo, it.state.value.revision) }
     }
-
-    fun renameCollection(collectionId: String, newName: String) {
-        bookmarkManager.renameCollection(collectionId, newName)
-        _statusMessage.value = "Collection renamed to $newName"
+    fun renameCollection(collectionId: String, newName: String, expectedRevision: Long? = null, onSuccess: () -> Unit = {}) {
+        if (library == null) { bookmarkManager.renameCollection(collectionId, newName); onSuccess(); return }
+        mutate("Folder renamed", onSuccess) { it.renameCollection(collectionId, newName, expectedRevision ?: it.state.value.revision) }
     }
 
     // ==================== Workspace Operations ====================
@@ -260,6 +306,10 @@ class BookmarksViewModel(
     fun isFavorite(workspaceId: String): Boolean {
         return bookmarkManager.isFavorite(workspaceId)
     }
+
+    fun setOriginWindow(windowId: String) { this.windowId = windowId }
+
+    fun close() { scope.cancel() }
 
     fun clearMessages() {
         _statusMessage.value = null
