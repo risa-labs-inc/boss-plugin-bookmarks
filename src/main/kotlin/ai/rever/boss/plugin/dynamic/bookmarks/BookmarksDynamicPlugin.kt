@@ -24,7 +24,7 @@ import kotlinx.coroutines.withTimeout
  *
  * Features:
  * - Self-contained bookmark management (BookmarkManager)
- * - Persistence to ~/Documents/BOSS/bookmarks/
+ * - Persistence beneath ~/.boss/plugin-data/, with non-destructive legacy import
  * - Search provider for GlobalSearchService integration
  * - BookmarkDataProvider API for BossConsole UI (context menus, dialogs)
  * - UI panel for viewing and managing bookmarks

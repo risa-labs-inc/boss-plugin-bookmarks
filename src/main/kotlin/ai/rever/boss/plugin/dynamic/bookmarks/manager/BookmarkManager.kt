@@ -33,7 +33,7 @@ import java.util.UUID
  */
 class BookmarkManager internal constructor(
     // Injectable for tests; production callers use the no-arg constructor and
-    // get the real ~/Documents/BOSS/bookmarks location.
+    // get the real plugin directory beneath the BOSS data root.
     private val fileManager: BookmarkFileManager
 ) {
     constructor() : this(BookmarkFileManager())
